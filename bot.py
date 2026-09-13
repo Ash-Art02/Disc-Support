@@ -41,6 +41,7 @@ APPEAL_CHANNEL_NAME = os.getenv("APPEAL_CHANNEL_NAME", "appeal")
 RECOMMEND_CHANNEL_NAME = os.getenv("RECOMMEND_CHANNEL_NAME", "recommend-senior")
 NOTES_LOG_CHANNEL_NAME = os.getenv("NOTES_LOG_CHANNEL_NAME", "staff-notes")
 ACTIONS_LOG_CHANNEL_NAME = os.getenv("ACTIONS_LOG_CHANNEL_NAME", "mod-actions")
+MESSAGE_LOG_CHANNEL_NAME = os.getenv("MESSAGE_LOG_CHANNEL_NAME", "message-log")
 IDLE_WARN_HOURS = float(os.getenv("IDLE_WARN_HOURS", "24"))
 IDLE_CLOSE_HOURS = float(os.getenv("IDLE_CLOSE_HOURS", "72"))
 IDLE_CHECK_MINUTES = float(os.getenv("IDLE_CHECK_MINUTES", "15"))
@@ -181,6 +182,19 @@ def actions_log(guild: discord.Guild):
     """Dedicated mod-actions channel, fallback to support-log."""
     return discord.utils.get(guild.text_channels, name=ACTIONS_LOG_CHANNEL_NAME) \
         or discord.utils.get(guild.text_channels, name=LOG_CHANNEL_NAME)
+
+
+def message_log(guild: discord.Guild):
+    """Tamper-proof chat/picture log. Staff can read, nobody (except the bot) can delete."""
+    return discord.utils.get(guild.text_channels, name=MESSAGE_LOG_CHANNEL_NAME)
+
+
+def _is_staff_log_channel(channel) -> bool:
+    """Log channels never get logged themselves (prevents feedback loops)."""
+    n = (getattr(channel, "name", "") or "").lower()
+    return n in {LOG_CHANNEL_NAME.lower(), SENIOR_LOG_CHANNEL_NAME.lower(),
+                 NOTES_LOG_CHANNEL_NAME.lower(), ACTIONS_LOG_CHANNEL_NAME.lower(),
+                 MESSAGE_LOG_CHANNEL_NAME.lower()}
 
 
 def notes_log_for_ticket(guild: discord.Guild, channel: discord.TextChannel):
@@ -943,14 +957,34 @@ async def ensure_system(guild: discord.Guild):
             overwrites[r] = discord.PermissionOverwrite(view_channel=True, send_messages=True,
                                                         read_message_history=True)
         actions_ch = await guild.create_text_channel(ACTIONS_LOG_CHANNEL_NAME, category=support_cat,
-                                                     overwrites=overwrites,
-                                                     topic="Staff-only: bans, rank changes, promotions.")
+                                                      overwrites=overwrites,
+                                                      topic="Staff-only: bans, rank changes, promotions.")
+    # tamper-proof message/picture log: BOTH staff tiers can read, NEITHER can
+    # send or delete (no Manage Messages for staff - only the bot writes here).
+    msg_log = discord.utils.get(guild.text_channels, name=MESSAGE_LOG_CHANNEL_NAME)
+    ro_overwrites = {guild.default_role: discord.PermissionOverwrite(view_channel=False),
+                     guild.me: discord.PermissionOverwrite(view_channel=True, send_messages=True,
+                                                           manage_messages=True, read_message_history=True)}
+    for r in staff_both:
+        ro_overwrites[r] = discord.PermissionOverwrite(view_channel=True, send_messages=False,
+                                                       add_reactions=False, read_message_history=True)
+    if msg_log is None:
+        msg_log = await guild.create_text_channel(MESSAGE_LOG_CHANNEL_NAME, category=support_cat,
+                                                  overwrites=ro_overwrites,
+                                                  topic="Tamper-proof: deleted/edited chats + pictures. Staff read-only.")
+    else:
+        # enforce read-only on re-runs (repairs channels where staff could delete)
+        try:
+            await msg_log.edit(overwrites=ro_overwrites,
+                               topic="Tamper-proof: deleted/edited chats + pictures. Staff read-only.")
+        except (discord.Forbidden, discord.HTTPException):
+            pass
     # appeal jail channel (banned users only see this)
     try:
         await ensure_appeal_channel(guild)
     except Exception as e:
         print(f"appeal channel setup failed: {e}")
-    return role, senior, support_cat, tickets_cat, panel_ch, log_ch, senior_log, notes_ch, actions_ch
+    return role, senior, support_cat, tickets_cat, panel_ch, log_ch, senior_log, notes_ch, actions_ch, msg_log
 
 
 @app_commands.checks.has_permissions(manage_guild=True)
@@ -958,7 +992,7 @@ async def ensure_system(guild: discord.Guild):
 async def setup_tickets(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True, thinking=True)
     try:
-        role, senior, _sc, tickets_cat, panel_ch, log_ch, senior_log, notes_ch, actions_ch = await ensure_system(interaction.guild)
+        role, senior, _sc, tickets_cat, panel_ch, log_ch, senior_log, notes_ch, actions_ch, msg_log = await ensure_system(interaction.guild)
         main_types = {k: v for k, v in TICKET_TYPES.items() if k != "appeal"}
         lines = "\n".join(
             f"{v['emoji']} **{v['label']}** - {v['desc']}"
@@ -975,11 +1009,13 @@ async def setup_tickets(interaction: discord.Interaction):
         appeal_ch = await post_appeal_panel(interaction.guild, clean_first=True)
         await log_ch.send(f"Ticket system ready. Staff: {role.mention} Senior: {senior.mention}\n"
                           f"Logs: tickets -> {log_ch.mention}, senior tickets -> {senior_log.mention}, "
-                          f"notes -> {notes_ch.mention}, actions -> {actions_ch.mention}")
+                          f"notes -> {notes_ch.mention}, actions -> {actions_ch.mention}, "
+                          f"deleted/edited chats+pics -> {msg_log.mention} (staff read-only)")
         await interaction.followup.send(
             f"Done! Panel in {panel_ch.mention}, appeal-only in {appeal_ch.mention}, "
             f"tickets in {tickets_cat.name}.\nLogs: {log_ch.mention} (tickets), "
-            f"{senior_log.mention} (senior), {notes_ch.mention} (notes), {actions_ch.mention} (actions).",
+            f"{senior_log.mention} (senior), {notes_ch.mention} (notes), {actions_ch.mention} (actions), "
+            f"{msg_log.mention} (deleted/edited evidence, staff can't delete).",
             ephemeral=True)
     except discord.Forbidden as e:
         print(f"setup-tickets Forbidden: {e}")
@@ -1654,6 +1690,108 @@ async def restart_cmd(interaction: discord.Interaction):
 async def ping_cmd(interaction: discord.Interaction):
     await interaction.response.send_message(
         f"Pong! {round(bot.latency*1000)}ms", ephemeral=True)
+
+
+# ---------------------------------------------------------------------------
+# Tamper-proof chat + picture log: deleted/edited messages are preserved with
+# attachments re-uploaded, so deleting "evidence" doesn't destroy it.
+# Both staff tiers can READ #message-log; neither can send or delete there.
+# ---------------------------------------------------------------------------
+async def _save_attachments(files_in) -> list:
+    """Download attachments and return discord.File copies. Skips oversized ones."""
+    out = []
+    for a in files_in or []:
+        try:
+            data = await a.read()
+        except Exception:
+            continue
+        if not data or len(data) > 8_000_000:
+            continue
+        try:
+            out.append(discord.File(io.BytesIO(data), filename=a.filename or "attachment"))
+        except Exception:
+            continue
+    return out
+
+
+@bot.event
+async def on_message_delete(message: discord.Message):
+    try:
+        if message.guild is None:
+            return
+        if getattr(message.author, "bot", False):
+            return
+        if _is_staff_log_channel(message.channel):
+            return
+        log_ch = message_log(message.guild)
+        if log_ch is None or message.channel.id == log_ch.id:
+            return
+        files = await _save_attachments(getattr(message, "attachments", []))
+        e = discord.Embed(title=f"Message deleted in #{message.channel.name}",
+                          color=discord.Color.red(),
+                          timestamp=datetime.datetime.now(datetime.timezone.utc))
+        e.add_field(name="Author", value=f"{message.author.mention} ({message.author} | {message.author.id})", inline=False)
+        e.add_field(name="Content", value=(message.content or "(no text)")[:1000], inline=False)
+        if getattr(message, "attachments", []):
+            names = ", ".join(f"{a.filename} ({a.size // 1024}KB)" for a in message.attachments)[:500]
+            kept = f"{len(files)}/{len(message.attachments)} re-uploaded below"
+            big = " (too large to keep - see original link before it expires)" if len(files) < len(message.attachments) else ""
+            e.add_field(name="Attachments", value=f"{names}\n{kept}{big}", inline=False)
+        e.set_footer(text=f"msg_id={message.id} | {message.created_at.strftime('%Y-%m-%d %H:%M') if message.created_at else ''}")
+        await log_ch.send(embed=e, files=files or None)
+    except Exception as ex:
+        print(f"message-log delete failed: {type(ex).__name__}: {ex}")
+
+
+@bot.event
+async def on_message_edit(before: discord.Message, after: discord.Message):
+    try:
+        if after.guild is None:
+            return
+        if getattr(after.author, "bot", False):
+            return
+        if _is_staff_log_channel(after.channel):
+            return
+        if (before.content or "") == (after.content or ""):
+            return  # embed-only update, not a real edit
+        log_ch = message_log(after.guild)
+        if log_ch is None or after.channel.id == log_ch.id:
+            return
+        e = discord.Embed(title=f"Message edited in #{after.channel.name}",
+                          color=discord.Color.orange(),
+                          timestamp=datetime.datetime.now(datetime.timezone.utc))
+        e.add_field(name="Author", value=f"{after.author.mention} ({after.author} | {after.author.id})", inline=False)
+        e.add_field(name="Before", value=(before.content or "(no text)")[:1000], inline=False)
+        e.add_field(name="After", value=(after.content or "(no text)")[:1000], inline=False)
+        e.add_field(name="Jump", value=f"[Go to message]({after.jump_url})", inline=False)
+        e.set_footer(text=f"msg_id={after.id}")
+        await log_ch.send(embed=e)
+    except Exception as ex:
+        print(f"message-log edit failed: {type(ex).__name__}: {ex}")
+
+
+@bot.event
+async def on_raw_bulk_message_delete(payload: discord.RawBulkMessageDeleteEvent):
+    try:
+        guild = bot.get_guild(payload.guild_id) if payload.guild_id else None
+        if guild is None:
+            return
+        log_ch = message_log(guild)
+        if log_ch is None or payload.channel_id == log_ch.id:
+            return
+        ch = guild.get_channel(payload.channel_id)
+        if ch is not None and _is_staff_log_channel(ch):
+            return
+        where = f"#{ch.name}" if ch else f"channel {payload.channel_id}"
+        e = discord.Embed(title=f"{len(payload.message_ids)} messages bulk-deleted in {where}",
+                          description="Bulk deletes (purge/clean) don't include content - "
+                                      "individual deletes above are the detailed record.",
+                          color=discord.Color.dark_red(),
+                          timestamp=datetime.datetime.now(datetime.timezone.utc))
+        e.set_footer(text="ids: " + ", ".join(str(i) for i in list(payload.message_ids)[:10]))
+        await log_ch.send(embed=e)
+    except Exception as ex:
+        print(f"message-log bulk failed: {type(ex).__name__}: {ex}")
 
 
 @bot.event
