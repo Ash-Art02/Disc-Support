@@ -992,31 +992,8 @@ async def ensure_system(guild: discord.Guild):
 async def setup_tickets(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True, thinking=True)
     try:
-        role, senior, _sc, tickets_cat, panel_ch, log_ch, senior_log, notes_ch, actions_ch, msg_log = await ensure_system(interaction.guild)
-        main_types = {k: v for k, v in TICKET_TYPES.items() if k != "appeal"}
-        lines = "\n".join(
-            f"{v['emoji']} **{v['label']}** - {v['desc']}"
-            + (" *(goes to senior staff privately)*" if v.get("level") == "senior" else "")
-            for v in main_types.values())
-        embed = discord.Embed(
-            title="Need help? Open a ticket",
-            description=(f"Click a button below. A private channel opens and staff are pinged.\n\n{lines}\n\n"
-                         f"Please don't open duplicates - max {MAX_OPEN_PER_USER} open each.\n"
-                         f"Normal: {role.mention} | Reports: {senior.mention} (private)"),
-            color=discord.Color.blurple())
-        await clean_old_panels(panel_ch, "Need help? Open a ticket")
-        await panel_ch.send(embed=embed, view=TicketPanelView())
-        appeal_ch = await post_appeal_panel(interaction.guild, clean_first=True)
-        await log_ch.send(f"Ticket system ready. Staff: {role.mention} Senior: {senior.mention}\n"
-                          f"Logs: tickets -> {log_ch.mention}, senior tickets -> {senior_log.mention}, "
-                          f"notes -> {notes_ch.mention}, actions -> {actions_ch.mention}, "
-                          f"deleted/edited chats+pics -> {msg_log.mention} (staff read-only)")
-        await interaction.followup.send(
-            f"Done! Panel in {panel_ch.mention}, appeal-only in {appeal_ch.mention}, "
-            f"tickets in {tickets_cat.name}.\nLogs: {log_ch.mention} (tickets), "
-            f"{senior_log.mention} (senior), {notes_ch.mention} (notes), {actions_ch.mention} (actions), "
-            f"{msg_log.mention} (deleted/edited evidence, staff can't delete).",
-            ephemeral=True)
+        summary = await do_setup_tickets_flow(interaction.guild)
+        await interaction.followup.send(summary, ephemeral=True)
     except discord.Forbidden as e:
         print(f"setup-tickets Forbidden: {e}")
         await interaction.followup.send(
@@ -1026,6 +1003,34 @@ async def setup_tickets(interaction: discord.Interaction):
     except Exception as e:
         print(f"setup-tickets failed: {type(e).__name__}: {e}")
         await interaction.followup.send(f"Setup failed: `{type(e).__name__}: {e}`", ephemeral=True)
+
+
+async def do_setup_tickets_flow(guild: discord.Guild) -> str:
+    """Shared setup flow used by /setup-tickets and the control panel. Returns a summary."""
+    role, senior, _sc, tickets_cat, panel_ch, log_ch, senior_log, notes_ch, actions_ch, msg_log = await ensure_system(guild)
+    main_types = {k: v for k, v in TICKET_TYPES.items() if k != "appeal"}
+    lines = "\n".join(
+        f"{v['emoji']} **{v['label']}** - {v['desc']}"
+        + (" *(goes to senior staff privately)*" if v.get("level") == "senior" else "")
+        for v in main_types.values())
+    embed = discord.Embed(
+        title="Need help? Open a ticket",
+        description=(f"Click a button below. A private channel opens and staff are pinged.\n\n{lines}\n\n"
+                     f"Please don't open duplicates - max {MAX_OPEN_PER_USER} open each.\n"
+                     f"Normal: {role.mention} | Reports: {senior.mention} (private)"),
+        color=discord.Color.blurple())
+    await clean_old_panels(panel_ch, "Need help? Open a ticket")
+    await panel_ch.send(embed=embed, view=TicketPanelView())
+    appeal_ch = await post_appeal_panel(guild, clean_first=True)
+    await log_ch.send(f"Ticket system ready. Staff: {role.mention} Senior: {senior.mention}\n"
+                      f"Logs: tickets -> {log_ch.mention}, senior tickets -> {senior_log.mention}, "
+                      f"notes -> {notes_ch.mention}, actions -> {actions_ch.mention}, "
+                      f"deleted/edited chats+pics -> {msg_log.mention} (staff read-only)")
+    return (
+        f"Done! Panel in {panel_ch.mention}, appeal-only in {appeal_ch.mention}, "
+        f"tickets in {tickets_cat.name}.\nLogs: {log_ch.mention} (tickets), "
+        f"{senior_log.mention} (senior), {notes_ch.mention} (notes), {actions_ch.mention} (actions), "
+        f"{msg_log.mention} (deleted/edited evidence, staff can't delete).")
 
 
 @bot.tree.command(name="ticket", description="Open a ticket (buttons).")
@@ -1045,42 +1050,47 @@ async def setup_recommend_senior(interaction: discord.Interaction):
     """Optional setup: #recommend-senior where anyone can nominate Support mods."""
     await interaction.response.defer(ephemeral=True, thinking=True)
     try:
-        guild = interaction.guild
-        support_cat = discord.utils.get(guild.categories, name=SUPPORT_CATEGORY_NAME)
-        if support_cat is None:
-            support_cat = await guild.create_category(SUPPORT_CATEGORY_NAME)
-        rec_ch = discord.utils.get(guild.text_channels, name=RECOMMEND_CHANNEL_NAME)
-        if rec_ch is None:
-            overwrites = {
-                guild.default_role: discord.PermissionOverwrite(view_channel=True, send_messages=False,
-                                                                read_message_history=True),
-                guild.me: discord.PermissionOverwrite(view_channel=True, send_messages=True),
-            }
-            staff = staff_role(guild)
-            senior = senior_role(guild)
-            if staff:
-                overwrites[staff] = discord.PermissionOverwrite(view_channel=True, send_messages=True,
-                                                                read_message_history=True)
-            if senior:
-                overwrites[senior] = discord.PermissionOverwrite(view_channel=True, send_messages=True,
-                                                                 read_message_history=True)
-            rec_ch = await guild.create_text_channel(RECOMMEND_CHANNEL_NAME, category=support_cat,
-                                                     overwrites=overwrites,
-                                                     topic="Recommend Support mods for Senior.")
-        await clean_old_panels(rec_ch, "Recommend a future Senior")
-        embed = discord.Embed(
-            title="⭐ Recommend a future Senior",
-            description=(f"Know a {STAFF_ROLE_NAME} mod who deserves **{SENIOR_STAFF_ROLE_NAME}**?\n"
-                         "Click below, name them + why. Others upvote/downvote.\n"
-                         "Seniors review top nominations with Promote/Dismiss."),
-            color=discord.Color.gold())
-        await rec_ch.send(embed=embed, view=RecommendView())
-        await interaction.followup.send(f"Done! Recommendations in {rec_ch.mention}.", ephemeral=True)
+        summary = await do_setup_recommend_flow(interaction.guild)
+        await interaction.followup.send(summary, ephemeral=True)
     except discord.Forbidden:
         await interaction.followup.send("Missing Manage Channels permission.", ephemeral=True)
     except Exception as e:
         print(f"setup-recommend-senior failed: {type(e).__name__}: {e}")
         await interaction.followup.send(f"Setup failed: `{type(e).__name__}: {e}`", ephemeral=True)
+
+
+async def do_setup_recommend_flow(guild: discord.Guild) -> str:
+    """Shared recommend-channel setup used by the slash command and control panel."""
+    support_cat = discord.utils.get(guild.categories, name=SUPPORT_CATEGORY_NAME)
+    if support_cat is None:
+        support_cat = await guild.create_category(SUPPORT_CATEGORY_NAME)
+    rec_ch = discord.utils.get(guild.text_channels, name=RECOMMEND_CHANNEL_NAME)
+    if rec_ch is None:
+        overwrites = {
+            guild.default_role: discord.PermissionOverwrite(view_channel=True, send_messages=False,
+                                                            read_message_history=True),
+            guild.me: discord.PermissionOverwrite(view_channel=True, send_messages=True),
+        }
+        staff = staff_role(guild)
+        senior = senior_role(guild)
+        if staff:
+            overwrites[staff] = discord.PermissionOverwrite(view_channel=True, send_messages=True,
+                                                            read_message_history=True)
+        if senior:
+            overwrites[senior] = discord.PermissionOverwrite(view_channel=True, send_messages=True,
+                                                             read_message_history=True)
+        rec_ch = await guild.create_text_channel(RECOMMEND_CHANNEL_NAME, category=support_cat,
+                                                 overwrites=overwrites,
+                                                 topic="Recommend Support mods for Senior.")
+    await clean_old_panels(rec_ch, "Recommend a future Senior")
+    embed = discord.Embed(
+        title="⭐ Recommend a future Senior",
+        description=(f"Know a {STAFF_ROLE_NAME} mod who deserves **{SENIOR_STAFF_ROLE_NAME}**?\n"
+                     "Click below, name them + why. Others upvote/downvote.\n"
+                     "Seniors review top nominations with Promote/Dismiss."),
+        color=discord.Color.gold())
+    await rec_ch.send(embed=embed, view=RecommendView())
+    return f"Done! Recommendations in {rec_ch.mention}."
 
 
 @bot.tree.command(name="claim", description="Claim this ticket (handling team).")
@@ -1678,6 +1688,11 @@ async def restart_cmd(interaction: discord.Interaction):
     """In-Discord update: /restart re-runs bot.py in place. ~5s downtime."""
     await interaction.response.send_message("Restarting to pick up updates...", ephemeral=True)
     await asyncio.sleep(1)
+    await _do_restart()
+
+
+async def _do_restart():
+    """Close the Discord session and re-exec the same interpreter + file."""
     try:
         await bot.close()
     except Exception:
@@ -1792,6 +1807,139 @@ async def on_raw_bulk_message_delete(payload: discord.RawBulkMessageDeleteEvent)
         await log_ch.send(embed=e)
     except Exception as ex:
         print(f"message-log bulk failed: {type(ex).__name__}: {ex}")
+
+
+# ---------------------------------------------------------------------------
+# Admin control panel: /control opens an ephemeral dashboard (admins only).
+# Status at a glance, one-tap setup/maintenance, two-tap restart.
+# Moderation itself stays on slash commands (/ban /watch /staff) on purpose:
+# Discord's member picker beats typing IDs into a panel.
+# ---------------------------------------------------------------------------
+STARTED_AT = time.time()
+
+
+def count_open_tickets(guild: discord.Guild) -> list:
+    return [ch for ch in guild.text_channels if is_ticket_channel(ch)]
+
+
+def build_control_embed(guild: discord.Guild) -> discord.Embed:
+    up = time.time() - STARTED_AT
+    hours, rem = divmod(int(up), 3600)
+    mins, secs = divmod(rem, 60)
+    uptime = f"{hours}h {mins}m" if hours else f"{mins}m {secs}s"
+    opens = count_open_tickets(guild)
+    try:
+        with open(COUNTER_FILE) as f:
+            total = json.load(f).get("counter", 0)
+    except Exception:
+        total = "?"
+    jailed = len(load_banned())
+    watched = sum(len(v) for v in load_watches().values())
+    msg_log = message_log(guild)
+    e = discord.Embed(title="Bot control panel", color=discord.Color.blurple(),
+                      timestamp=datetime.datetime.now(datetime.timezone.utc))
+    e.add_field(name="Status", value="Online", inline=True)
+    e.add_field(name="Latency", value=f"{round(bot.latency*1000)}ms", inline=True)
+    e.add_field(name="Uptime", value=uptime, inline=True)
+    e.add_field(name="Open tickets", value=str(len(opens)), inline=True)
+    e.add_field(name="Tickets total", value=str(total), inline=True)
+    e.add_field(name="Jailed / watched", value=f"{jailed} / {watched}", inline=True)
+    e.add_field(name="Evidence log", value=msg_log.mention if msg_log else "(run Setup)", inline=True)
+    if opens:
+        e.add_field(name="Oldest open", value=", ".join(c.mention for c in opens[:5]), inline=False)
+    e.add_field(
+        name="Moderation quick ref",
+        value=("/ban @user reason duration - jail to #appeal-only\n"
+               "/unban @user - release\n"
+               "/watch @user note duration - staff-only note\n"
+               "/staff action @user - ranks (support/senior/downgrade/remove)\n"
+               "/note text - private note on this ticket"),
+        inline=False)
+    e.set_footer(text="Admin-only. Panel buttons expire after 5 min - re-run /control.")
+    return e
+
+
+class ControlView(discord.ui.View):
+    """Ephemeral admin dashboard buttons. Double-gated: command + interaction check."""
+    def __init__(self):
+        super().__init__(timeout=300)
+        self._restart_armed = False
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.guild_permissions.manage_guild or interaction.user.guild_permissions.administrator:
+            return True
+        await interaction.response.send_message("Admins only.", ephemeral=True)
+        return False
+
+    async def _refresh(self, interaction: discord.Interaction):
+        self._restart_armed = False
+        await interaction.response.edit_message(embed=build_control_embed(interaction.guild), view=self)
+
+    @discord.ui.button(label="Refresh", emoji="↻", style=discord.ButtonStyle.secondary, custom_id="ctl_refresh")
+    async def refresh(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._refresh(interaction)
+
+    @discord.ui.button(label="Setup tickets", emoji="🎫", style=discord.ButtonStyle.primary, custom_id="ctl_setup")
+    async def setup(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        try:
+            summary = await do_setup_tickets_flow(interaction.guild)
+            await interaction.followup.send(summary, ephemeral=True)
+            try:
+                await interaction.message.edit(embed=build_control_embed(interaction.guild), view=self)
+            except Exception:
+                pass
+        except discord.Forbidden:
+            await interaction.followup.send("Missing Manage Channels / Manage Roles permission.", ephemeral=True)
+        except Exception as ex:
+            await interaction.followup.send(f"Setup failed: `{type(ex).__name__}: {ex}`", ephemeral=True)
+
+    @discord.ui.button(label="Recommend setup", emoji="⭐", style=discord.ButtonStyle.secondary, custom_id="ctl_rec")
+    async def rec_setup(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        try:
+            summary = await do_setup_recommend_flow(interaction.guild)
+            await interaction.followup.send(summary, ephemeral=True)
+        except discord.Forbidden:
+            await interaction.followup.send("Missing Manage Channels permission.", ephemeral=True)
+        except Exception as ex:
+            await interaction.followup.send(f"Setup failed: `{type(ex).__name__}: {ex}`", ephemeral=True)
+
+    @discord.ui.button(label="Post ticket panel here", emoji="📌", style=discord.ButtonStyle.secondary, custom_id="ctl_post")
+    async def post_here(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.channel.send("Click a ticket type:", view=TicketPanelView())
+        await interaction.response.send_message("Panel posted in this channel.", ephemeral=True)
+
+    @discord.ui.button(label="Run idle check", emoji="⏳", style=discord.ButtonStyle.secondary, custom_id="ctl_idle")
+    async def idle_now(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        try:
+            await idle_sweep_once()
+            await interaction.followup.send("Idle check done - warnings sent / dead tickets closed per policy.", ephemeral=True)
+            try:
+                await interaction.message.edit(embed=build_control_embed(interaction.guild), view=self)
+            except Exception:
+                pass
+        except Exception as ex:
+            await interaction.followup.send(f"Idle check failed: `{type(ex).__name__}: {ex}`", ephemeral=True)
+
+    @discord.ui.button(label="Restart", emoji="⏻", style=discord.ButtonStyle.danger, custom_id="ctl_restart")
+    async def restart(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not self._restart_armed:
+            self._restart_armed = True
+            await interaction.response.send_message(
+                "Tap **Restart** again within 5 min to confirm (~5s downtime).", ephemeral=True)
+            return
+        await interaction.response.send_message("Restarting...", ephemeral=True)
+        await asyncio.sleep(1)
+        await _do_restart()
+
+
+@app_commands.checks.has_permissions(manage_guild=True)
+@bot.tree.command(name="control", description="Admin control panel: status, setup, maintenance (admin).")
+async def control_cmd(interaction: discord.Interaction):
+    await interaction.response.send_message(
+        embed=build_control_embed(interaction.guild), view=ControlView(), ephemeral=True)
 
 
 @bot.event
