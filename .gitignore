@@ -1,0 +1,8 @@
+.env
+__pycache__/
+*.pyc
+tickets.json
+banned.json
+watches.json
+idle.json
+recommendations.json
