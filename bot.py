@@ -1865,7 +1865,8 @@ class DashSettingsModal(discord.ui.Modal):
 @app_commands.checks.has_permissions(manage_guild=True)
 @bot.tree.command(name="dash", description="Admin dashboard: status, settings, quick actions (admin).")
 async def dash_cmd(interaction: discord.Interaction):
-    await interaction.response.send_message(
+    await interaction.response.defer(ephemeral=True, thinking=True)
+    await interaction.followup.send(
         embed=await build_dash_embed(interaction.guild), view=DashView(), ephemeral=True)
 
 
