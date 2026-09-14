@@ -4,3 +4,4 @@ __pycache__/
 *.json
 idle.json
 recommendations.json
+dashboard_data/

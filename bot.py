@@ -46,6 +46,9 @@ IDLE_WARN_HOURS = float(os.getenv("IDLE_WARN_HOURS", "24"))
 IDLE_CLOSE_HOURS = float(os.getenv("IDLE_CLOSE_HOURS", "72"))
 IDLE_CHECK_MINUTES = float(os.getenv("IDLE_CHECK_MINUTES", "15"))
 
+# Dashboard integration
+DASHBOARD_DATA_DIR = Path(os.getenv("DASHBOARD_DATA_DIR", Path(__file__).parent / "dashboard_data"))
+
 MAX_OPEN_PER_USER = 3
 CREATE_COOLDOWN_SEC = 45
 
@@ -1617,9 +1620,32 @@ async def idle_sweep_loop():
     while not bot.is_closed():
         try:
             await idle_sweep_once()
+            # Check for dashboard-triggered idle check
+            for guild in bot.guilds:
+                flag = DASHBOARD_DATA_DIR / f"idle_{guild.id}.flag"
+                if flag.exists():
+                    flag.unlink(missing_ok=True)
+                    print(f"Dashboard idle check triggered for {guild.name}")
+                    await idle_sweep_once()
         except Exception as e:
             print(f"idle sweep failed: {type(e).__name__}: {e}")
         await asyncio.sleep(max(5, IDLE_CHECK_MINUTES * 60))
+
+
+async def dashboard_restart_watcher():
+    """Poll for restart flags from dashboard and restart when found."""
+    await bot.wait_until_ready()
+    while not bot.is_closed():
+        try:
+            for guild in bot.guilds:
+                flag = DASHBOARD_DATA_DIR / f"restart_{guild.id}.flag"
+                if flag.exists():
+                    flag.unlink(missing_ok=True)
+                    print(f"Dashboard restart requested for {guild.name}")
+                    await _do_restart()
+        except Exception as e:
+            print(f"restart watcher failed: {type(e).__name__}: {e}")
+        await asyncio.sleep(5)
 
 
 async def idle_sweep_once():
@@ -1805,6 +1831,7 @@ async def on_ready():
         bot._idle_task_started = True
         bot.loop.create_task(idle_sweep_loop())
         bot.loop.create_task(tempjail_sweep_loop())
+        bot.loop.create_task(dashboard_restart_watcher())
     try:
         if GUILD_ID:
             g = discord.Object(id=int(GUILD_ID))
