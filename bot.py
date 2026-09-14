@@ -16,17 +16,10 @@ import time
 import asyncio
 import datetime
 import subprocess
-from pathlib import Path
 
 import discord
 from discord import app_commands
 from discord.ext import commands
-
-# Database layer (shared with dashboard)
-from db import (
-    check_and_clear_restart_flag,
-    check_and_clear_idle_flag,
-)
 
 try:
     from dotenv import load_dotenv
@@ -52,6 +45,9 @@ MESSAGE_LOG_CHANNEL_NAME = os.getenv("MESSAGE_LOG_CHANNEL_NAME", "message-log")
 IDLE_WARN_HOURS = float(os.getenv("IDLE_WARN_HOURS", "24"))
 IDLE_CLOSE_HOURS = float(os.getenv("IDLE_CLOSE_HOURS", "72"))
 IDLE_CHECK_MINUTES = float(os.getenv("IDLE_CHECK_MINUTES", "15"))
+
+# Dashboard integration
+DASHBOARD_DATA_DIR = Path(os.getenv("DASHBOARD_DATA_DIR", Path(__file__).parent / "dashboard_data"))
 
 MAX_OPEN_PER_USER = 3
 CREATE_COOLDOWN_SEC = 45
@@ -1624,9 +1620,11 @@ async def idle_sweep_loop():
     while not bot.is_closed():
         try:
             await idle_sweep_once()
-            # Check for dashboard-triggered idle check via DB
+            # Check for dashboard-triggered idle check
             for guild in bot.guilds:
-                if await check_and_clear_idle_flag(guild.id):
+                flag = DASHBOARD_DATA_DIR / f"idle_{guild.id}.flag"
+                if flag.exists():
+                    flag.unlink(missing_ok=True)
                     print(f"Dashboard idle check triggered for {guild.name}")
                     await idle_sweep_once()
         except Exception as e:
@@ -1635,12 +1633,14 @@ async def idle_sweep_loop():
 
 
 async def dashboard_restart_watcher():
-    """Poll for restart flags from dashboard (via DB) and restart when found."""
+    """Poll for restart flags from dashboard and restart when found."""
     await bot.wait_until_ready()
     while not bot.is_closed():
         try:
             for guild in bot.guilds:
-                if await check_and_clear_restart_flag(guild.id):
+                flag = DASHBOARD_DATA_DIR / f"restart_{guild.id}.flag"
+                if flag.exists():
+                    flag.unlink(missing_ok=True)
                     print(f"Dashboard restart requested for {guild.name}")
                     await _do_restart()
         except Exception as e:

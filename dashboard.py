@@ -1,5 +1,5 @@
 """
-Dashboard web server: FastAPI + Discord OAuth2 + PostgreSQL/SQLite shared DB
+Dashboard web server: FastAPI + Discord OAuth2
 Run: pip install -r requirements.txt && python dashboard.py
 OAuth2: Discord Developer Portal -> OAuth2 -> Redirects -> add http://localhost:8080/callback (dev) or https://your-app.fly.dev/callback (prod)
 """
@@ -7,29 +7,39 @@ import os
 import json
 import time
 import secrets
-from typing import Optional, Dict, Any
+import asyncio
+from pathlib import Path
+from typing import Optional
 
 import httpx
 from fastapi import FastAPI, Request, Response, HTTPException, Depends
 from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
+from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
 from pydantic import BaseModel
-
-# ─── DB Layer ───
-from db import (
-    init_db, close_db,
-    get_guild_settings, set_guild_settings,
-    set_restart_flag, set_idle_flag,
-)
 
 # ─── Config ───
 CLIENT_ID = os.getenv("DASHBOARD_CLIENT_ID", "")
 CLIENT_SECRET = os.getenv("DASHBOARD_CLIENT_SECRET", "")
 REDIRECT_URI = os.getenv("DASHBOARD_REDIRECT_URI", "http://localhost:8080/callback")
 SECRET_KEY = os.getenv("DASHBOARD_SECRET_KEY", secrets.token_urlsafe(32))
-BOT_TOKEN = os.getenv("DISCORD_TOKEN", "")
-GUILD_ID = os.getenv("GUILD_ID", "").strip()
+BOT_TOKEN = os.getenv("DISCORD_TOKEN", "")  # for bot API calls
+GUILD_ID = os.getenv("GUILD_ID", "").strip()  # optional: single-guild mode
+
+# ─── Storage (swap for PostgreSQL later) ───
+DATA_DIR = Path(__file__).parent / "dashboard_data"
+DATA_DIR.mkdir(exist_ok=True)
+GUILD_FILE = DATA_DIR / "guilds.json"
+
+def load_guilds() -> dict:
+    try:
+        return json.loads(GUILD_FILE.read_text())
+    except Exception:
+        return {}
+
+def save_guilds(data: dict):
+    GUILD_FILE.write_text(json.dumps(data, indent=2))
 
 # ─── Discord API helpers ───
 API_BASE = "https://discord.com/api/v10"
@@ -37,6 +47,13 @@ API_BASE = "https://discord.com/api/v10"
 async def discord_get(path: str, token: str) -> dict:
     async with httpx.AsyncClient() as client:
         r = await client.get(f"{API_BASE}{path}", headers={"Authorization": f"Bearer {token}"})
+        r.raise_for_status()
+        return r.json()
+
+async def bot_get(path: str) -> dict:
+    """Call Discord API as the bot (for guilds the bot is in)."""
+    async with httpx.AsyncClient() as client:
+        r = await client.get(f"{API_BASE}{path}", headers={"Authorization": f"Bot {BOT_TOKEN}"})
         r.raise_for_status()
         return r.json()
 
@@ -67,15 +84,9 @@ async def refresh_token(refresh: str) -> dict:
         r.raise_for_status()
         return r.json()
 
-async def bot_get(path: str) -> dict:
-    async with httpx.AsyncClient() as client:
-        r = await client.get(f"{API_BASE}{path}", headers={"Authorization": f"Bot {BOT_TOKEN}"})
-        r.raise_for_status()
-        return r.json()
-
 # ─── FastAPI app ───
-app = FastAPI(title="Support Bot Dashboard", on_startup=[init_db], on_shutdown=[close_db])
-app.add_middleware(SessionMiddleware, secret_key=SECRET_KEY, https_only=False)
+app = FastAPI(title="Support Bot Dashboard")
+app.add_middleware(SessionMiddleware, secret_key=SECRET_KEY, https_only=False)  # True in prod behind HTTPS
 
 templates = Jinja2Templates(directory="templates")
 
@@ -110,8 +121,9 @@ async def callback(request: Request, code: str, state: str):
         raise HTTPException(400, "Invalid state")
     tokens = await exchange_code(code)
     user = await discord_get("/users/@me", tokens["access_token"])
+    # fetch guilds user can manage
     guilds = await discord_get("/users/@me/guilds", tokens["access_token"])
-    managed = [g for g in guilds if g.get("permissions", 0) & 0x20]
+    managed = [g for g in guilds if g.get("permissions", 0) & 0x20]  # MANAGE_GUILD
     request.session["user"] = {
         "id": user["id"],
         "username": user["username"],
@@ -159,33 +171,38 @@ async def list_guilds(user: dict = Depends(require_user)):
             "name": g["name"],
             "icon": g.get("icon"),
             "bot_here": g["id"] in bot_guild_ids,
-            "managed": True,
+            "managed": True,  # already filtered in login
         }
         for g in user["guilds"]
     ]
 
 @app.get("/api/guild/{guild_id}/settings")
 async def get_settings(guild_id: str, user: dict = Depends(require_user)):
-    if not any(g["id"] == guild_id for g in user["guilds"]):
-        raise HTTPException(403, "Not your guild")
-    settings = await get_guild_settings(int(guild_id))
+    guilds = load_guilds()
+    settings = guilds.get(guild_id, {})
     return GuildSettings(**settings)
 
 @app.post("/api/guild/{guild_id}/settings")
 async def save_settings(guild_id: str, data: GuildSettings, user: dict = Depends(require_user)):
+    # verify user manages this guild
     if not any(g["id"] == guild_id for g in user["guilds"]):
         raise HTTPException(403, "Not your guild")
-    await set_guild_settings(int(guild_id), data.model_dump())
+    guilds = load_guilds()
+    guilds[guild_id] = data.model_dump()
+    save_guilds(guilds)
     return {"ok": True}
 
-# ─── Bot stats (read-only) ───
+# ─── Bot stats (read-only, for dashboard cards) ───
 @app.get("/api/guild/{guild_id}/stats")
 async def get_stats(guild_id: str, user: dict = Depends(require_user)):
     if not any(g["id"] == guild_id for g in user["guilds"]):
         raise HTTPException(403, "Not your guild")
     try:
+        # get open tickets via bot's perspective
         channels = await bot_get(f"/guilds/{guild_id}/channels")
         tickets = [c for c in channels if c["type"] == 0 and any(c["name"].startswith(p + "-") for p in ("support", "report", "appeal", "other", "claimed-support", "claimed-report", "claimed-appeal", "claimed-other"))]
+        # jailed count from bot's banned.json
+        # (dashboard can't read bot's file directly - would need shared DB or bot endpoint)
         return {
             "open_tickets": len(tickets),
             "ticket_channels": [{"id": c["id"], "name": c["name"]} for c in tickets[:10]],
@@ -193,7 +210,7 @@ async def get_stats(guild_id: str, user: dict = Depends(require_user)):
     except Exception as e:
         return {"error": str(e)}
 
-# ─── Actions (write flags to DB for bot to pick up) ───
+# ─── Actions (trigger bot behavior via API) ───
 class RestartRequest(BaseModel):
     confirm: bool = True
 
@@ -203,14 +220,18 @@ async def trigger_restart(guild_id: str, req: RestartRequest, user: dict = Depen
         raise HTTPException(403, "Not your guild")
     if not req.confirm:
         raise HTTPException(400, "Confirm required")
-    await set_restart_flag(int(guild_id))
+    # This requires the bot to expose an internal endpoint or shared signal.
+    # Simplest: write a flag file that run.py / bot.py polls.
+    flag = DATA_DIR / f"restart_{guild_id}.flag"
+    flag.write_text(str(time.time()))
     return {"ok": True, "message": "Restart requested - bot will pick up within 5s"}
 
 @app.post("/api/guild/{guild_id}/idle-check")
 async def trigger_idle(guild_id: str, user: dict = Depends(require_user)):
     if not any(g["id"] == guild_id for g in user["guilds"]):
         raise HTTPException(403, "Not your guild")
-    await set_idle_flag(int(guild_id))
+    flag = DATA_DIR / f"idle_{guild_id}.flag"
+    flag.write_text(str(time.time()))
     return {"ok": True, "message": "Idle check requested"}
 
 # ─── Health ───
