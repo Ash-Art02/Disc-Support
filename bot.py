@@ -1700,26 +1700,19 @@ def get_ticket_prefixes() -> tuple:
     return tuple(v["prefix"] + "-" for v in TICKET_TYPES.values())
 
 
-def build_dash_embed(guild: discord.Guild) -> discord.Embed:
+async def build_dash_embed(guild: discord.Guild) -> discord.Embed:
     up = time.time() - STARTED_AT
     hours, rem = divmod(int(up), 3600)
     mins, secs = divmod(rem, 60)
     uptime = f"{hours}h {mins}m" if hours else f"{mins}m {secs}s"
-    prefixes = get_ticket_prefixes()
-    opens = [c for c in guild.text_channels if c.name.startswith(prefixes)]
+    opens = count_open_tickets(guild)
     try:
         with open(COUNTER_FILE) as f:
             total = json.load(f).get("counter", 0)
     except Exception:
         total = "?"
-    try:
-        jailed = len(load_banned())
-    except Exception:
-        jailed = 0
-    try:
-        watched = sum(len(v) for v in load_watches().values())
-    except Exception:
-        watched = 0
+    jailed = len(load_banned())
+    watched = sum(len(v) for v in load_watches().values())
     msg_log = message_log(guild)
     staff = staff_role(guild)
     senior = senior_role(guild)
@@ -1739,10 +1732,6 @@ def build_dash_embed(guild: discord.Guild) -> discord.Embed:
     return e
 
 
-async def build_dash_embed_async(guild: discord.Guild) -> discord.Embed:
-    return build_dash_embed(guild)
-
-
 class DashView(discord.ui.View):
     """Ephemeral admin dashboard. Double-gated: command + interaction check."""
     def __init__(self):
@@ -1755,7 +1744,7 @@ class DashView(discord.ui.View):
         return False
 
     async def _refresh(self, interaction: discord.Interaction):
-        await interaction.response.edit_message(embed=build_dash_embed(interaction.guild), view=self)
+        await interaction.response.edit_message(embed=await build_dash_embed(interaction.guild), view=self)
 
     @discord.ui.button(label="Refresh", emoji="↻", style=discord.ButtonStyle.secondary, custom_id="dash_refresh")
     async def refresh(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -1771,7 +1760,7 @@ class DashView(discord.ui.View):
         try:
             summary = await do_setup_tickets_flow(interaction.guild)
             await interaction.followup.send(summary, ephemeral=True)
-            await interaction.message.edit(embed=build_dash_embed(interaction.guild), view=self)
+            await interaction.message.edit(embed=await build_dash_embed(interaction.guild), view=self)
         except discord.Forbidden:
             await interaction.followup.send("Missing Manage Channels / Manage Roles permission.", ephemeral=True)
         except Exception as ex:
@@ -1799,7 +1788,7 @@ class DashView(discord.ui.View):
         try:
             await idle_sweep_once()
             await interaction.followup.send("Idle check done - warnings sent / dead tickets closed per policy.", ephemeral=True)
-            await interaction.message.edit(embed=build_dash_embed(interaction.guild), view=self)
+            await interaction.message.edit(embed=await build_dash_embed(interaction.guild), view=self)
         except Exception as ex:
             await interaction.followup.send(f"Idle check failed: `{type(ex).__name__}: {ex}`", ephemeral=True)
 
@@ -1878,7 +1867,7 @@ class DashSettingsModal(discord.ui.Modal):
 async def dash_cmd(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True, thinking=True)
     await interaction.followup.send(
-        embed=build_dash_embed(interaction.guild), view=DashView(), ephemeral=True)
+        embed=await build_dash_embed(interaction.guild), view=DashView(), ephemeral=True)
 
 
 @bot.tree.command(name="ping", description="Check if the bot is alive.")
