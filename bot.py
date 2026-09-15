@@ -1763,7 +1763,7 @@ class DashView(discord.ui.View):
 
     @discord.ui.button(label="Settings", style=discord.ButtonStyle.primary, custom_id="dash_settings")
     async def settings(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_modal(DashSettingsModal())
+        await interaction.response.send_modal(DashSettingsModal1())
 
     @discord.ui.button(label="Setup Tickets", style=discord.ButtonStyle.success, custom_id="dash_setup_tix")
     async def setup_tix(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -1810,49 +1810,62 @@ class DashView(discord.ui.View):
         await _do_restart()
 
 
-class DashSettingsModal(discord.ui.Modal):
+class DashSettingsModal1(discord.ui.Modal):
+    """Settings modal part 1: role & channel names (5 fields max)."""
     def __init__(self):
-        super().__init__(title="Bot Settings")
+        super().__init__(title="Bot Settings (1/2) — Roles & Channels")
         self.staff_role = discord.ui.TextInput(label="Staff Role Name", default=STAFF_ROLE_NAME, max_length=50, required=False)
         self.senior_role = discord.ui.TextInput(label="Senior Role Name", default=SENIOR_STAFF_ROLE_NAME, max_length=50, required=False)
         self.banned_role = discord.ui.TextInput(label="Banned Role Name", default=BANNED_ROLE_NAME, max_length=50, required=False)
         self.ticket_cat = discord.ui.TextInput(label="Ticket Category", default=TICKETS_CATEGORY_NAME, max_length=50, required=False)
         self.support_cat = discord.ui.TextInput(label="Support Category", default=SUPPORT_CATEGORY_NAME, max_length=50, required=False)
-        self.panel_ch = discord.ui.TextInput(label="Panel Channel", default=PANEL_CHANNEL_NAME, max_length=50, required=False)
-        self.log_ch = discord.ui.TextInput(label="Log Channel", default=LOG_CHANNEL_NAME, max_length=50, required=False)
-        self.senior_log_ch = discord.ui.TextInput(label="Senior Log Channel", default=SENIOR_LOG_CHANNEL_NAME, max_length=50, required=False)
-        self.appeal_ch = discord.ui.TextInput(label="Appeal Channel", default=APPEAL_CHANNEL_NAME, max_length=50, required=False)
-        self.max_open = discord.ui.TextInput(label="Max Open Tickets/User", default=str(MAX_OPEN_PER_USER), max_length=2, required=False)
-        self.cooldown = discord.ui.TextInput(label="Create Cooldown (sec)", default=str(CREATE_COOLDOWN_SEC), max_length=3, required=False)
-        self.idle_warn = discord.ui.TextInput(label="Idle Warn (hours)", default=str(IDLE_WARN_HOURS), max_length=4, required=False)
-        self.idle_close = discord.ui.TextInput(label="Idle Close (hours)", default=str(IDLE_CLOSE_HOURS), max_length=4, required=False)
-        for f in (self.staff_role, self.senior_role, self.banned_role, self.ticket_cat, self.support_cat,
-                  self.panel_ch, self.log_ch, self.senior_log_ch, self.appeal_ch, self.max_open, self.cooldown,
-                  self.idle_warn, self.idle_close):
+        for f in (self.staff_role, self.senior_role, self.banned_role, self.ticket_cat, self.support_cat):
             self.add_item(f)
 
     async def on_submit(self, interaction: discord.Interaction):
-        # Update .env (runtime only - restart needed for full effect)
-        updates = {
+        # Store part 1 values in the view for part 2
+        view: DashView = self.view  # type: ignore
+        view._settings_part1 = {
             "STAFF_ROLE_NAME": self.staff_role.value or STAFF_ROLE_NAME,
             "SENIOR_STAFF_ROLE_NAME": self.senior_role.value or SENIOR_STAFF_ROLE_NAME,
             "BANNED_ROLE_NAME": self.banned_role.value or BANNED_ROLE_NAME,
             "TICKETS_CATEGORY_NAME": self.ticket_cat.value or TICKETS_CATEGORY_NAME,
             "SUPPORT_CATEGORY_NAME": self.support_cat.value or SUPPORT_CATEGORY_NAME,
+        }
+        await interaction.response.send_modal(DashSettingsModal2())
+
+
+class DashSettingsModal2(discord.ui.Modal):
+    """Settings modal part 2: channel names + limits (5 fields)."""
+    def __init__(self):
+        super().__init__(title="Bot Settings (2/2) — Channels & Limits")
+        self.panel_ch = discord.ui.TextInput(label="Panel Channel", default=PANEL_CHANNEL_NAME, max_length=50, required=False)
+        self.log_ch = discord.ui.TextInput(label="Log Channel", default=LOG_CHANNEL_NAME, max_length=50, required=False)
+        self.senior_log_ch = discord.ui.TextInput(label="Senior Log Channel", default=SENIOR_LOG_CHANNEL_NAME, max_length=50, required=False)
+        self.appeal_ch = discord.ui.TextInput(label="Appeal Channel", default=APPEAL_CHANNEL_NAME, max_length=50, required=False)
+        self.max_open = discord.ui.TextInput(label="Max Open Tickets/User", default=str(MAX_OPEN_PER_USER), max_length=2, required=False)
+        for f in (self.panel_ch, self.log_ch, self.senior_log_ch, self.appeal_ch, self.max_open):
+            self.add_item(f)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        view: DashView = self.view  # type: ignore
+        part1 = getattr(view, "_settings_part1", {})
+        updates = {
+            **part1,
             "REPORT_CHANNEL_NAME": self.panel_ch.value or PANEL_CHANNEL_NAME,
             "LOG_CHANNEL_NAME": self.log_ch.value or LOG_CHANNEL_NAME,
             "SENIOR_LOG_CHANNEL_NAME": self.senior_log_ch.value or SENIOR_LOG_CHANNEL_NAME,
             "APPEAL_CHANNEL_NAME": self.appeal_ch.value or APPEAL_CHANNEL_NAME,
             "MAX_OPEN_PER_USER": self.max_open.value or str(MAX_OPEN_PER_USER),
-            "CREATE_COOLDOWN_SEC": self.cooldown.value or str(CREATE_COOLDOWN_SEC),
-            "IDLE_WARN_HOURS": self.idle_warn.value or str(IDLE_WARN_HOURS),
-            "IDLE_CLOSE_HOURS": self.idle_close.value or str(IDLE_CLOSE_HOURS),
+            # cooldown/idle not in modal - keep existing
+            "CREATE_COOLDOWN_SEC": str(CREATE_COOLDOWN_SEC),
+            "IDLE_WARN_HOURS": str(IDLE_WARN_HOURS),
+            "IDLE_CLOSE_HOURS": str(IDLE_CLOSE_HOURS),
         }
         env_path = Path(__file__).with_name(".env")
         lines = []
         if env_path.exists():
             lines = env_path.read_text().splitlines()
-        # Preserve existing lines, update known keys
         new_lines = []
         seen = set()
         for line in lines:
