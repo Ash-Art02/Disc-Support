@@ -1757,15 +1757,15 @@ class DashView(discord.ui.View):
     async def _refresh(self, interaction: discord.Interaction):
         await interaction.response.edit_message(embed=build_dash_embed(interaction.guild), view=self)
 
-    @discord.ui.button(label="Refresh", style=discord.ButtonStyle.secondary, custom_id="dash_refresh")
+    @discord.ui.button(label="Refresh", emoji="↻", style=discord.ButtonStyle.secondary, custom_id="dash_refresh")
     async def refresh(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self._refresh(interaction)
 
-    @discord.ui.button(label="Settings", style=discord.ButtonStyle.primary, custom_id="dash_settings")
+    @discord.ui.button(label="Settings", emoji="⚙️", style=discord.ButtonStyle.primary, custom_id="dash_settings")
     async def settings(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_modal(DashSettingsModal())
 
-    @discord.ui.button(label="Setup Tickets", style=discord.ButtonStyle.success, custom_id="dash_setup_tix")
+    @discord.ui.button(label="Setup Tickets", emoji="🎫", style=discord.ButtonStyle.success, custom_id="dash_setup_tix")
     async def setup_tix(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer(ephemeral=True, thinking=True)
         try:
@@ -1777,7 +1777,7 @@ class DashView(discord.ui.View):
         except Exception as ex:
             await interaction.followup.send(f"Setup failed: `{type(ex).__name__}: {ex}`", ephemeral=True)
 
-    @discord.ui.button(label="Setup Recommend", style=discord.ButtonStyle.secondary, custom_id="dash_setup_rec")
+    @discord.ui.button(label="Setup Recommend", emoji="⭐", style=discord.ButtonStyle.secondary, custom_id="dash_setup_rec")
     async def setup_rec(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer(ephemeral=True, thinking=True)
         try:
@@ -1788,12 +1788,12 @@ class DashView(discord.ui.View):
         except Exception as ex:
             await interaction.followup.send(f"Setup failed: `{type(ex).__name__}: {ex}`", ephemeral=True)
 
-    @discord.ui.button(label="Post Ticket Panel", style=discord.ButtonStyle.secondary, custom_id="dash_post")
+    @discord.ui.button(label="Post Ticket Panel", emoji="📌", style=discord.ButtonStyle.secondary, custom_id="dash_post")
     async def post_here(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.channel.send("Click a ticket type:", view=TicketPanelView())
         await interaction.response.send_message("Panel posted in this channel.", ephemeral=True)
 
-    @discord.ui.button(label="Run Idle Check", style=discord.ButtonStyle.secondary, custom_id="dash_idle")
+    @discord.ui.button(label="Run Idle Check", emoji="⏳", style=discord.ButtonStyle.secondary, custom_id="dash_idle")
     async def idle_now(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer(ephemeral=True, thinking=True)
         try:
@@ -1803,7 +1803,7 @@ class DashView(discord.ui.View):
         except Exception as ex:
             await interaction.followup.send(f"Idle check failed: `{type(ex).__name__}: {ex}`", ephemeral=True)
 
-    @discord.ui.button(label="Restart Bot", style=discord.ButtonStyle.danger, custom_id="dash_restart")
+    @discord.ui.button(label="Restart Bot", emoji="⏻", style=discord.ButtonStyle.danger, custom_id="dash_restart")
     async def restart(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_message("Restarting...", ephemeral=True)
         await asyncio.sleep(1)
