@@ -1763,7 +1763,7 @@ class DashView(discord.ui.View):
 
     @discord.ui.button(label="Settings", style=discord.ButtonStyle.primary, custom_id="dash_settings")
     async def settings(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_modal(DashSettingsModal1())
+        await interaction.response.send_modal(DashSettingsModal1(self))
 
     @discord.ui.button(label="Setup Tickets", style=discord.ButtonStyle.success, custom_id="dash_setup_tix")
     async def setup_tix(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -1812,8 +1812,9 @@ class DashView(discord.ui.View):
 
 class DashSettingsModal1(discord.ui.Modal):
     """Settings modal part 1: role & channel names (5 fields max)."""
-    def __init__(self):
+    def __init__(self, parent_view):
         super().__init__(title="Bot Settings (1/2) — Roles & Channels")
+        self.parent_view = parent_view
         self.staff_role = discord.ui.TextInput(label="Staff Role Name", default=STAFF_ROLE_NAME, max_length=50, required=False)
         self.senior_role = discord.ui.TextInput(label="Senior Role Name", default=SENIOR_STAFF_ROLE_NAME, max_length=50, required=False)
         self.banned_role = discord.ui.TextInput(label="Banned Role Name", default=BANNED_ROLE_NAME, max_length=50, required=False)
@@ -1823,22 +1824,22 @@ class DashSettingsModal1(discord.ui.Modal):
             self.add_item(f)
 
     async def on_submit(self, interaction: discord.Interaction):
-        # Store part 1 values in the view for part 2
-        view: DashView = self.view  # type: ignore
-        view._settings_part1 = {
+        # Store part 1 values in the parent view for part 2
+        self.parent_view._settings_part1 = {
             "STAFF_ROLE_NAME": self.staff_role.value or STAFF_ROLE_NAME,
             "SENIOR_STAFF_ROLE_NAME": self.senior_role.value or SENIOR_STAFF_ROLE_NAME,
             "BANNED_ROLE_NAME": self.banned_role.value or BANNED_ROLE_NAME,
             "TICKETS_CATEGORY_NAME": self.ticket_cat.value or TICKETS_CATEGORY_NAME,
             "SUPPORT_CATEGORY_NAME": self.support_cat.value or SUPPORT_CATEGORY_NAME,
         }
-        await interaction.response.send_modal(DashSettingsModal2())
+        await interaction.response.send_modal(DashSettingsModal2(self.parent_view))
 
 
 class DashSettingsModal2(discord.ui.Modal):
     """Settings modal part 2: channel names + limits (5 fields)."""
-    def __init__(self):
+    def __init__(self, parent_view):
         super().__init__(title="Bot Settings (2/2) — Channels & Limits")
+        self.parent_view = parent_view
         self.panel_ch = discord.ui.TextInput(label="Panel Channel", default=PANEL_CHANNEL_NAME, max_length=50, required=False)
         self.log_ch = discord.ui.TextInput(label="Log Channel", default=LOG_CHANNEL_NAME, max_length=50, required=False)
         self.senior_log_ch = discord.ui.TextInput(label="Senior Log Channel", default=SENIOR_LOG_CHANNEL_NAME, max_length=50, required=False)
@@ -1848,8 +1849,7 @@ class DashSettingsModal2(discord.ui.Modal):
             self.add_item(f)
 
     async def on_submit(self, interaction: discord.Interaction):
-        view: DashView = self.view  # type: ignore
-        part1 = getattr(view, "_settings_part1", {})
+        part1 = getattr(self.parent_view, "_settings_part1", {})
         updates = {
             **part1,
             "REPORT_CHANNEL_NAME": self.panel_ch.value or PANEL_CHANNEL_NAME,
