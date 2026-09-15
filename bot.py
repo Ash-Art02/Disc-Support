@@ -1877,15 +1877,8 @@ class DashSettingsModal(discord.ui.Modal):
 @bot.tree.command(name="dash", description="Admin dashboard: status, settings, quick actions (admin).")
 async def dash_cmd(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True, thinking=True)
-    try:
-        await interaction.followup.send(
-            embed=build_dash_embed(interaction.guild), view=DashView(), ephemeral=True)
-    except Exception as ex:
-        print(f"/dash failed: {type(ex).__name__}: {ex}")
-        try:
-            await interaction.followup.send(f"Error: `{type(ex).__name__}: {ex}`", ephemeral=True)
-        except Exception:
-            pass
+    await interaction.followup.send(
+        embed=build_dash_embed(interaction.guild), view=DashView(), ephemeral=True)
 
 
 @bot.tree.command(name="ping", description="Check if the bot is alive.")
