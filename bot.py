@@ -1765,6 +1765,94 @@ async def ping_cmd(interaction: discord.Interaction):
         f"Pong! {round(bot.latency*1000)}ms", ephemeral=True)
 
 
+@app_commands.checks.has_permissions(manage_guild=True)
+@bot.tree.command(name="check-permissions", description="Check bot permissions vs required (admin).")
+async def check_permissions_cmd(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True, thinking=True)
+    
+    guild = interaction.guild
+    me = guild.me
+    
+    # Required permissions for full bot functionality
+    required = {
+        "Manage Channels": ("manage_channels", "Create/modify ticket channels, categories"),
+        "Manage Roles": ("manage_roles", "Create/assign Support, Senior, Banned, Member roles"),
+        "Ban Members": ("ban_members", "/ban and /unban commands"),
+        "View Channels": ("view_channel", "Read all channels for ticket access"),
+        "Send Messages": ("send_messages", "Post in tickets, logs, panels"),
+        "Embed Links": ("embed_links", "Rich embeds in tickets/logs"),
+        "Attach Files": ("attach_files", "Transcripts, screenshots in tickets"),
+        "Read Message History": ("read_message_history", "Transcripts, message log"),
+        "Mention Everyone": ("mention_everyone", "Ping staff roles in tickets"),
+        "Manage Messages": ("manage_messages", "Cleanup, transcripts"),
+        "Kick Members": ("kick_members", "Not used but good to have"),
+        "Timeout Members": ("moderate_members", "Security timeouts, SLA enforcement"),
+        "View Audit Log": ("view_audit_log", "/audit command"),
+        "Administrator": ("administrator", "Full access - covers everything above"),
+    }
+    
+    perms = me.guild_permissions
+    e = discord.Embed(title=f"Permission Check: {me.display_name}",
+                      color=discord.Color.blurple(),
+                      timestamp=datetime.datetime.now(datetime.timezone.utc))
+    e.set_thumbnail(url=me.display_avatar.url)
+    
+    missing_critical = []
+    missing_optional = []
+    all_ok = []
+    
+    critical = {"Manage Channels", "Manage Roles", "Ban Members", "View Channels", 
+                "Send Messages", "Embed Links", "Attach Files", "Read Message History", 
+                "Mention Everyone", "Manage Messages", "Timeout Members"}
+    
+    for name, (attr, desc) in required.items():
+        has = getattr(perms, attr, False)
+        status = "✅" if has else "❌"
+        line = f"{status} **{name}** — {desc}"
+        if has:
+            all_ok.append(line)
+        elif name in critical:
+            missing_critical.append(line)
+        else:
+            missing_optional.append(line)
+    
+    if missing_critical:
+        e.add_field(name=f"❌ Missing Critical ({len(missing_critical)})", value="\n".join(missing_critical), inline=False)
+    if missing_optional:
+        e.add_field(name=f"⚠️ Missing Optional ({len(missing_optional)})", value="\n".join(missing_optional), inline=False)
+    if all_ok:
+        e.add_field(name=f"✅ Present ({len(all_ok)})", value="\n".join(all_ok), inline=False)
+    
+    # Role hierarchy check
+    bot_top = me.top_role
+    staff_roles = [discord.utils.get(guild.roles, name=STAFF_ROLE_NAME),
+                   discord.utils.get(guild.roles, name=SENIOR_STAFF_ROLE_NAME),
+                   discord.utils.get(guild.roles, name=BANNED_ROLE_NAME),
+                   discord.utils.get(guild.roles, name=VERIFICATION_ROLE_NAME)]
+    staff_roles = [r for r in staff_roles if r]
+    hierarchy_issues = []
+    for r in staff_roles:
+        if r and r.position >= bot_top.position:
+            hierarchy_issues.append(f"`{r.name}` is above or equal to bot's top role")
+    
+    if hierarchy_issues:
+        e.add_field(name="⚠️ Role Hierarchy Issues", value="\n".join(hierarchy_issues), inline=False)
+    else:
+        e.add_field(name="✅ Role Hierarchy", value="Bot role is above all managed roles", inline=False)
+    
+    # Generate invite URL
+    from discord import Permissions
+    p = Permissions()
+    for attr in [a for a, _ in required.values()]:
+        setattr(p, attr, True)
+    invite_url = f"https://discord.com/oauth2/authorize?client_id={bot.user.id}&permissions={p.value}&scope=bot%20applications.commands"
+    
+    e.add_field(name="🔗 Correct Invite URL", value=f"[Click here]({invite_url}) — use this to re-invite with all permissions", inline=False)
+    e.set_footer(text="Fix: drag bot role above Support/Senior/Banned/Member in Server Settings > Roles. Re-invite with link above if needed.")
+    
+    await interaction.followup.send(embed=e, ephemeral=True)
+
+
 # ---------------------------------------------------------------------------
 # /profile - User profile card
 # ---------------------------------------------------------------------------
