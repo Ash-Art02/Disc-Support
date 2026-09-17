@@ -1886,6 +1886,13 @@ class FAQView(discord.ui.View):
             return
         await interaction.response.send_modal(FAQModal())
 
+    @discord.ui.button(label="Delete Entry", style=discord.ButtonStyle.danger, custom_id="faq_delete")
+    async def delete(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not is_staff_member(interaction.user):
+            await interaction.response.send_message("Staff only.", ephemeral=True)
+            return
+        await interaction.response.send_modal(FAQDeleteModal())
+
     @discord.ui.button(label="List All", style=discord.ButtonStyle.secondary, custom_id="faq_list")
     async def list_all(self, interaction: discord.Interaction, button: discord.ui.Button):
         data = load_faq()
@@ -1904,6 +1911,32 @@ class FAQView(discord.ui.View):
                 val += f"\n... and {len(items) - 10} more"
             e.add_field(name=cat, value=val, inline=False)
         await interaction.response.send_message(embed=e, ephemeral=True)
+
+
+class FAQDeleteModal(discord.ui.Modal):
+    def __init__(self):
+        super().__init__(title="Delete FAQ Entry")
+        self.key = discord.ui.TextInput(label="Entry Keyword/Question (exact)", max_length=100, required=True,
+                                        placeholder="Type the exact question/keyword to delete")
+        self.confirm = discord.ui.TextInput(label="Type DELETE to confirm", max_length=6, required=True)
+        self.add_item(self.key)
+        self.add_item(self.confirm)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        if not is_staff_member(interaction.user):
+            await interaction.response.send_message("Staff only.", ephemeral=True)
+            return
+        if self.confirm.value.strip().upper() != "DELETE":
+            await interaction.response.send_message("Confirmation failed - type DELETE exactly.", ephemeral=True)
+            return
+        data = load_faq()
+        k = self.key.value.strip().lower()
+        if k not in data:
+            await interaction.response.send_message(f"No entry found for `{self.key.value}`.", ephemeral=True)
+            return
+        del data[k]
+        save_faq(data)
+        await interaction.response.send_message(f"Deleted FAQ entry **{k}**.", ephemeral=True)
 
 
 class FAQSearchModal(discord.ui.Modal):
