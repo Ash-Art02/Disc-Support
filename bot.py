@@ -58,6 +58,7 @@ VERIFICATION_ROLE_NAME = os.getenv("VERIFICATION_ROLE_NAME", "Member")
 WELCOME_DM_ENABLED = os.getenv("WELCOME_DM_ENABLED", "true").lower() == "true"
 FAQ_CHANNEL_NAME = os.getenv("FAQ_CHANNEL_NAME", "faq")
 VERIFICATION_CHANNEL_NAME = os.getenv("VERIFICATION_CHANNEL_NAME", "verify")
+VERIFICATION_EXEMPT_CHANNELS = [c.strip() for c in os.getenv("VERIFICATION_EXEMPT_CHANNELS", "").split(",") if c.strip()]
 
 # ---------------------------------------------------------------------------
 # Ticket types: prefix, label, modal fields
@@ -2054,7 +2055,7 @@ class VerifyView(discord.ui.View):
 
 
 @app_commands.checks.has_permissions(manage_guild=True)
-@bot.tree.command(name="setup-verification", description="Post the verification panel in #verify + lock general channels (admin).")
+@bot.tree.command(name="setup-verification", description="Post verification panel + lock ALL channels except verify + exempt (admin).")
 async def setup_verification_cmd(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True, thinking=True)
     guild = interaction.guild
@@ -2074,19 +2075,28 @@ async def setup_verification_cmd(interaction: discord.Interaction):
         support_cat = discord.utils.get(guild.categories, name=SUPPORT_CATEGORY_NAME)
         verify_ch = await guild.create_text_channel(VERIFICATION_CHANNEL_NAME, category=support_cat, overwrites=overwrites)
     
-    # Lock down general channels for @everyone, allow verified role
-    general_text = discord.utils.get(guild.text_channels, name="general")
-    general_voice = discord.utils.get(guild.voice_channels, name="General")
-    locked = []
-    for ch in (general_text, general_voice):
+    # Build exempt channel set (verify channel + configured exemptions)
+    exempt_ids = {verify_ch.id}
+    for name in VERIFICATION_EXEMPT_CHANNELS:
+        ch = discord.utils.get(guild.text_channels, name=name) or discord.utils.get(guild.voice_channels, name=name)
         if ch:
-            try:
-                # Deny @everyone, allow verified role
+            exempt_ids.add(ch.id)
+    
+    # Lock ALL channels except exempt ones
+    locked = []
+    all_channels = list(guild.text_channels) + list(guild.voice_channels)
+    for ch in all_channels:
+        if ch.id in exempt_ids:
+            continue
+        try:
+            # Deny @everyone
+            perms_text = ch.overwrites_for(guild.default_role)
+            if perms_text.view_channel is not False and perms_text.connect is not False:
                 await ch.set_permissions(guild.default_role, view_channel=False, connect=False)
                 await ch.set_permissions(role, view_channel=True, connect=True, speak=True)
                 locked.append(ch.mention)
-            except (discord.Forbidden, discord.HTTPException):
-                pass
+        except (discord.Forbidden, discord.HTTPException):
+            pass
     
     # Ensure verify channel is visible to everyone
     try:
@@ -2105,7 +2115,9 @@ async def setup_verification_cmd(interaction: discord.Interaction):
     
     msg = f"Verification panel posted in {verify_ch.mention}."
     if locked:
-        msg += f"\nLocked channels for unverified users: {', '.join(locked)}"
+        msg += f"\nLocked {len(locked)} channels for unverified users."
+    if VERIFICATION_EXEMPT_CHANNELS:
+        msg += f"\nExempted: {', '.join(VERIFICATION_EXEMPT_CHANNELS)}"
     await interaction.followup.send(msg, ephemeral=True)
 
 
