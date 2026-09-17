@@ -50,6 +50,35 @@ MAX_OPEN_PER_USER = 3
 CREATE_COOLDOWN_SEC = 45
 
 # ---------------------------------------------------------------------------
+# Security / Anti-spam config
+# ---------------------------------------------------------------------------
+SECURITY_ENABLED = os.getenv("SECURITY_ENABLED", "true").lower() == "true"
+SPAM_WINDOW_SEC = int(os.getenv("SPAM_WINDOW_SEC", "10"))
+SPAM_MAX_MESSAGES = int(os.getenv("SPAM_MAX_MESSAGES", "5"))
+SPAM_MAX_MENTIONS = int(os.getenv("SPAM_MAX_MENTIONS", "5"))
+SPAM_MAX_LINKS = int(os.getenv("SPAM_MAX_LINKS", "3"))
+SPAM_DUPLICATE_WINDOW_SEC = int(os.getenv("SPAM_DUPLICATE_WINDOW_SEC", "30"))
+LINK_BLOCK_SHORTENERS = os.getenv("LINK_BLOCK_SHORTENERS", "true").lower() == "true"
+LINK_BLOCK_SUSPICIOUS_TLDS = os.getenv("LINK_BLOCK_SUSPICIOUS_TLDS", "true").lower() == "true"
+SECURITY_LOG_CHANNEL_NAME = os.getenv("SECURITY_LOG_CHANNEL_NAME", "security-log")
+SECURITY_ACTION_DURATION_MIN = int(os.getenv("SECURITY_ACTION_DURATION_MIN", "10"))
+
+# Suspicious TLDs commonly used for phishing/malware
+SUSPICIOUS_TLDS = {
+    "tk", "ml", "ga", "cf", "gq", "xyz", "top", "club", "online", "site",
+    "work", "click", "download", "zip", "mov", "phd", "nexus", "foo",
+    "review", "country", "stream", "racing", "men", "loan", "date",
+    "faith", "accountant", "win", "party", "science", "engineer",
+}
+
+# Known URL shorteners
+URL_SHORTENERS = {
+    "bit.ly", "tinyurl.com", "t.co", "goo.gl", "ow.ly", "is.gd",
+    "buff.ly", "adf.ly", "bc.vc", "shorte.st", "clk.im", "cutt.ly",
+    "rb.gy", "short.io", "rebrand.ly", "tiny.cc", "v.gd", "tr.im",
+}
+
+# ---------------------------------------------------------------------------
 # Ticket types: prefix, label, modal fields
 # ---------------------------------------------------------------------------
 TICKET_TYPES = {
@@ -1692,6 +1721,28 @@ async def ping_cmd(interaction: discord.Interaction):
         f"Pong! {round(bot.latency*1000)}ms", ephemeral=True)
 
 
+@app_commands.checks.has_permissions(manage_guild=True)
+@bot.tree.command(name="security", description="View/configure security & anti-spam settings (admin).")
+async def security_cmd(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True, thinking=True)
+    embed = discord.Embed(title="Security & Anti-Spam Settings",
+                          color=discord.Color.blurple(),
+                          timestamp=datetime.datetime.now(datetime.timezone.utc))
+    embed.add_field(name="Enabled", value=str(SECURITY_ENABLED), inline=True)
+    embed.add_field(name="Log Channel", value=f"#{SECURITY_LOG_CHANNEL_NAME}", inline=True)
+    embed.add_field(name="Timeout Duration", value=f"{SECURITY_ACTION_DURATION_MIN} min", inline=True)
+    embed.add_field(name="Spam Window", value=f"{SPAM_WINDOW_SEC}s", inline=True)
+    embed.add_field(name="Max Messages/Window", value=str(SPAM_MAX_MESSAGES), inline=True)
+    embed.add_field(name="Max Mentions/Msg", value=str(SPAM_MAX_MENTIONS), inline=True)
+    embed.add_field(name="Max Links/Msg", value=str(SPAM_MAX_LINKS), inline=True)
+    embed.add_field(name="Duplicate Window", value=f"{SPAM_DUPLICATE_WINDOW_SEC}s", inline=True)
+    embed.add_field(name="Block Shorteners", value=str(LINK_BLOCK_SHORTENERS), inline=True)
+    embed.add_field(name="Block Suspicious TLDs", value=str(LINK_BLOCK_SUSPICIOUS_TLDS), inline=True)
+    embed.add_field(name="Action Duration", value=f"{SECURITY_ACTION_DURATION_MIN} min", inline=True)
+    embed.set_footer(text="Configure via .env variables. Changes require /restart.")
+    await interaction.followup.send(embed=embed, ephemeral=True)
+
+
 # ---------------------------------------------------------------------------
 # Tamper-proof chat + picture log: deleted/edited messages are preserved with
 # attachments re-uploaded, so deleting "evidence" doesn't destroy it.
@@ -1792,6 +1843,174 @@ async def on_raw_bulk_message_delete(payload: discord.RawBulkMessageDeleteEvent)
         await log_ch.send(embed=e)
     except Exception as ex:
         print(f"message-log bulk failed: {type(ex).__name__}: {ex}")
+
+
+# ---------------------------------------------------------------------------
+# Security / Anti-spam tracking
+# ---------------------------------------------------------------------------
+from collections import defaultdict
+
+_spam_tracker: dict[tuple[int, int], list[float]] = defaultdict(list)
+_duplicate_tracker: dict[tuple[int, int, str], float] = {}
+_security_actions: dict[tuple[int, int], float] = {}
+
+def _clean_old_entries(now: float, window: float):
+    """Remove expired entries from trackers."""
+    cutoff = now - window
+    for key in list(_spam_tracker.keys()):
+        _spam_tracker[key] = [t for t in _spam_tracker[key] if t > cutoff]
+        if not _spam_tracker[key]:
+            del _spam_tracker[key]
+    for key in list(_duplicate_tracker.keys()):
+        if _duplicate_tracker[key] < cutoff:
+            del _duplicate_tracker[key]
+    for key in list(_security_actions.keys()):
+        if _security_actions[key] < cutoff:
+            del _security_actions[key]
+
+
+def _extract_links(text: str) -> list[str]:
+    """Extract URLs from text."""
+    import re
+    url_pattern = re.compile(r'https?://[^\s<>"\']+|www\.[^\s<>"\']+')
+    return url_pattern.findall(text)
+
+
+def _is_suspicious_link(url: str) -> tuple[bool, str]:
+    """Check if a link is suspicious. Returns (is_suspicious, reason)."""
+    url_lower = url.lower()
+    # Check URL shorteners
+    if LINK_BLOCK_SHORTENERS:
+        for shortener in URL_SHORTENERS:
+            if shortener in url_lower:
+                return True, f"URL shortener ({shortener})"
+    # Check suspicious TLDs
+    if LINK_BLOCK_SUSPICIOUS_TLDS:
+        import re
+        tld_match = re.search(r'\.([a-z]{2,})(?:/|$)', url_lower)
+        if tld_match and tld_match.group(1) in SUSPICIOUS_TLDS:
+            return True, f"suspicious TLD (.{tld_match.group(1)})"
+    # Check for IP addresses instead of domains
+    import re
+    if re.search(r'https?://\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}', url_lower):
+        return True, "IP address URL"
+    # Check for @ in URL (credential stealing attempt)
+    if '@' in url and '://' in url:
+        return True, "credential-style URL"
+    return False, ""
+
+
+async def _log_security_action(guild: discord.Guild, user: discord.Member, action: str, reason: str, message: discord.Message = None):
+    """Log security action to security log channel."""
+    try:
+        log_ch = discord.utils.get(guild.text_channels, name=SECURITY_LOG_CHANNEL_NAME)
+        if not log_ch:
+            return
+        e = discord.Embed(title=f"Security Action: {action}",
+                          color=discord.Color.red(),
+                          timestamp=datetime.datetime.now(datetime.timezone.utc))
+        e.add_field(name="User", value=f"{user.mention} ({user} | {user.id})", inline=False)
+        e.add_field(name="Reason", value=reason[:1000], inline=False)
+        if message:
+            e.add_field(name="Channel", value=message.channel.mention, inline=True)
+            e.add_field(name="Message", value=(message.content[:500] + "...") if len(message.content) > 500 else message.content, inline=False)
+            e.add_field(name="Jump", value=f"[Jump]({message.jump_url})", inline=True)
+        await log_ch.send(embed=e)
+    except Exception:
+        pass
+
+
+async def _apply_security_action(message: discord.Message, action: str, reason: str):
+    """Apply security action (delete, timeout, etc.)."""
+    guild = message.guild
+    user = message.author
+    now = time.time()
+    key = (guild.id, user.id)
+    
+    # Prevent repeated actions within window
+    if key in _security_actions and now - _security_actions[key] < 60:
+        return
+    _security_actions[key] = now
+    
+    try:
+        if action == "delete":
+            await message.delete(reason=f"Security: {reason}")
+        elif action == "timeout":
+            duration = datetime.timedelta(minutes=SECURITY_ACTION_DURATION_MIN)
+            await user.timeout(duration, reason=f"Security: {reason}")
+        elif action == "warn":
+            pass  # Just log
+        
+        await _log_security_action(guild, user, action, reason, message)
+    except discord.Forbidden:
+        pass
+    except Exception as ex:
+        print(f"Security action failed: {type(ex).__name__}: {ex}")
+
+
+@bot.event
+async def on_message(message: discord.Message):
+    """Security checks on every message."""
+    if not SECURITY_ENABLED:
+        return
+    if message.guild is None:
+        return
+    if message.author.bot:
+        return
+    # Staff bypass
+    if is_staff_member(message.author):
+        return
+    
+    now = time.time()
+    _clean_old_entries(now, max(SPAM_WINDOW_SEC, SPAM_DUPLICATE_WINDOW_SEC) * 2)
+    
+    guild_id = message.guild.id
+    user_id = message.author.id
+    channel_id = message.channel.id
+    key = (guild_id, user_id)
+    content = message.content or ""
+    
+    # 1. Duplicate message detection
+    content_hash = hash(content.strip().lower())
+    dup_key = (guild_id, user_id, content_hash)
+    if dup_key in _duplicate_tracker:
+        last_time = _duplicate_tracker[dup_key]
+        if now - last_time < SPAM_DUPLICATE_WINDOW_SEC:
+            await _apply_security_action(message, "delete", f"Duplicate message (sent {now - last_time:.1f}s ago)")
+            return
+    _duplicate_tracker[dup_key] = now
+    
+    # 2. Message rate limiting
+    _spam_tracker[key].append(now)
+    recent_count = len([t for t in _spam_tracker[key] if now - t < SPAM_WINDOW_SEC])
+    if recent_count > SPAM_MAX_MESSAGES:
+        await _apply_security_action(message, "timeout", f"Message spam ({recent_count} messages in {SPAM_WINDOW_SEC}s)")
+        return
+    
+    # 3. Mention spam detection
+    mention_count = len(message.mentions) + len(message.role_mentions)
+    if mention_count > SPAM_MAX_MENTIONS:
+        await _apply_security_action(message, "timeout", f"Mention spam ({mention_count} mentions)")
+        return
+    
+    # 4. Link analysis
+    links = _extract_links(content)
+    if links:
+        link_count = len(links)
+        if link_count > SPAM_MAX_LINKS:
+            await _apply_security_action(message, "timeout", f"Link spam ({link_count} links)")
+            return
+        
+        for link in links:
+            suspicious, reason = _is_suspicious_link(link)
+            if suspicious:
+                await _apply_security_action(message, "delete", f"Suspicious link: {reason}")
+                return
+    
+    # 5. Everyone/here mention check (if not allowed)
+    if message.mention_everyone and not message.author.guild_permissions.mention_everyone:
+        await _apply_security_action(message, "delete", "Unauthorized @everyone/@here mention")
+        return
 
 
 @bot.event
