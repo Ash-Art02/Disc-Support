@@ -2054,19 +2054,45 @@ class VerifyView(discord.ui.View):
 
 
 @app_commands.checks.has_permissions(manage_guild=True)
-@bot.tree.command(name="setup-verification", description="Post the verification panel in #verify (admin).")
+@bot.tree.command(name="setup-verification", description="Post the verification panel in #verify + lock general channels (admin).")
 async def setup_verification_cmd(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True, thinking=True)
     guild = interaction.guild
+    
+    # Get or create the verified role
+    role = discord.utils.get(guild.roles, name=VERIFICATION_ROLE_NAME)
+    if role is None:
+        role = await guild.create_role(name=VERIFICATION_ROLE_NAME, reason="Verification role")
+    
+    # Get or create verification channel
     verify_ch = discord.utils.get(guild.text_channels, name=VERIFICATION_CHANNEL_NAME)
     if verify_ch is None:
-        # Create it
         overwrites = {
             guild.default_role: discord.PermissionOverwrite(view_channel=True, send_messages=False),
             guild.me: discord.PermissionOverwrite(view_channel=True, send_messages=True),
         }
         support_cat = discord.utils.get(guild.categories, name=SUPPORT_CATEGORY_NAME)
         verify_ch = await guild.create_text_channel(VERIFICATION_CHANNEL_NAME, category=support_cat, overwrites=overwrites)
+    
+    # Lock down general channels for @everyone, allow verified role
+    general_text = discord.utils.get(guild.text_channels, name="general")
+    general_voice = discord.utils.get(guild.voice_channels, name="General")
+    locked = []
+    for ch in (general_text, general_voice):
+        if ch:
+            try:
+                # Deny @everyone, allow verified role
+                await ch.set_permissions(guild.default_role, view_channel=False, connect=False)
+                await ch.set_permissions(role, view_channel=True, connect=True, speak=True)
+                locked.append(ch.mention)
+            except (discord.Forbidden, discord.HTTPException):
+                pass
+    
+    # Ensure verify channel is visible to everyone
+    try:
+        await verify_ch.set_permissions(guild.default_role, view_channel=True, send_messages=False)
+    except (discord.Forbidden, discord.HTTPException):
+        pass
     
     e = discord.Embed(title="🔐 Server Verification",
                       description=(
@@ -2076,7 +2102,11 @@ async def setup_verification_cmd(interaction: discord.Interaction):
                       color=discord.Color.blue())
     await clean_old_panels(verify_ch, "Server Verification")
     await verify_ch.send(embed=e, view=VerifyView())
-    await interaction.followup.send(f"Verification panel posted in {verify_ch.mention}.", ephemeral=True)
+    
+    msg = f"Verification panel posted in {verify_ch.mention}."
+    if locked:
+        msg += f"\nLocked channels for unverified users: {', '.join(locked)}"
+    await interaction.followup.send(msg, ephemeral=True)
 
 
 # ---------------------------------------------------------------------------
