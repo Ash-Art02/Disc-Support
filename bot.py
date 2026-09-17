@@ -382,7 +382,6 @@ async def create_ticket(guild: discord.Guild, user: discord.Member, type_key: st
                 await dest.send(embed=we)
     except Exception:
         pass
-    await sort_ticket_channels(guild)
     return channel
 
 # ---------------------------------------------------------------------------
@@ -585,12 +584,10 @@ class TicketControlView(discord.ui.View):
         except Exception:
             pass
         await asyncio.sleep(5)
-        guild = interaction.guild
         try:
             await interaction.channel.delete(reason=f"Closed by {interaction.user}")
         except discord.HTTPException:
             pass
-        await sort_ticket_channels(guild)
 
 # ---------------------------------------------------------------------------
 # Appeal-jail: /ban restricts to #appeal only (no kick), /unban restores
@@ -1115,12 +1112,10 @@ async def close_cmd(interaction: discord.Interaction,
     except Exception:
         pass
     await asyncio.sleep(5)
-    guild = interaction.guild
     try:
         await interaction.channel.delete(reason=f"Closed by {interaction.user}: {reason}")
     except discord.HTTPException:
         pass
-    await sort_ticket_channels(guild)
 
 
 @bot.tree.command(name="add", description="Add a user to this ticket (handling team).")
@@ -1648,45 +1643,6 @@ async def close_ticket_silently(channel: discord.TextChannel, reason: str):
         pass
 
 
-# ---------------------------------------------------------------------------
-# Channel sorting: auto-sort ticket channels by type or alphabetically
-# ---------------------------------------------------------------------------
-TICKET_SORT_MODE = os.getenv("TICKET_SORT_MODE", "type").lower()  # "type" or "alpha"
-
-async def sort_ticket_channels(guild: discord.Guild):
-    """Reorder ticket channels in the Tickets category by type or alphabetically."""
-    tickets_cat = discord.utils.get(guild.categories, name=TICKETS_CATEGORY_NAME)
-    if not tickets_cat:
-        return
-    
-    ticket_channels = [c for c in tickets_cat.text_channels if is_ticket_channel(c)]
-    if not ticket_channels:
-        return
-    
-    if TICKET_SORT_MODE == "alpha":
-        # Alphabetical by name
-        sorted_channels = sorted(ticket_channels, key=lambda c: c.name.lower())
-    else:
-        # By type prefix order: support, report, appeal, other, then claimed variants
-        type_order = ["support", "report", "appeal", "other"]
-        def sort_key(c):
-            name = c.name.lower()
-            # Find which type prefix
-            for i, t in enumerate(type_order):
-                if name.startswith(t + "-") or name.startswith("claimed-" + t + "-"):
-                    return (i, name)
-            return (99, name)
-        sorted_channels = sorted(ticket_channels, key=sort_key)
-    
-    # Apply positions
-    for i, ch in enumerate(sorted_channels):
-        try:
-            if ch.position != i:
-                await ch.edit(position=i, reason="Auto-sort tickets")
-        except (discord.Forbidden, discord.HTTPException):
-            pass
-
-
 async def idle_sweep_loop():
     await bot.wait_until_ready()
     while not bot.is_closed():
@@ -1807,14 +1763,6 @@ async def restart_cmd(interaction: discord.Interaction):
 async def ping_cmd(interaction: discord.Interaction):
     await interaction.response.send_message(
         f"Pong! {round(bot.latency*1000)}ms", ephemeral=True)
-
-
-@app_commands.checks.has_permissions(manage_guild=True)
-@bot.tree.command(name="sort-tickets", description="Re-sort ticket channels by type or alphabetically (admin).")
-async def sort_tickets_cmd(interaction: discord.Interaction):
-    await interaction.response.defer(ephemeral=True, thinking=True)
-    await sort_ticket_channels(interaction.guild)
-    await interaction.followup.send(f"Ticket channels sorted by **{TICKET_SORT_MODE}**.", ephemeral=True)
 
 
 # ---------------------------------------------------------------------------
