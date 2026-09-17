@@ -1765,6 +1765,32 @@ async def ping_cmd(interaction: discord.Interaction):
         f"Pong! {round(bot.latency*1000)}ms", ephemeral=True)
 
 
+@bot.tree.command(name="invite", description="Get invite link to add bot to another server (admin).")
+async def invite_cmd(interaction: discord.Interaction):
+    """Generates OAuth2 invite link with all required permissions + scopes."""
+    from discord import Permissions
+    perms = Permissions(
+        manage_channels=True,
+        manage_roles=True,
+        ban_members=True,
+        view_channel=True,
+        send_messages=True,
+        embed_links=True,
+        attach_files=True,
+        read_message_history=True,
+        mention_everyone=True,
+        manage_messages=True,
+        moderate_members=True,
+        view_audit_log=True,
+        kick_members=True,
+    )
+    url = f"https://discord.com/oauth2/authorize?client_id={bot.user.id}&permissions={perms.value}&scope=bot%20applications.commands"
+    await interaction.response.send_message(
+        f"Invite link (all perms + commands):\n{url}",
+        ephemeral=True
+    )
+
+
 # ---------------------------------------------------------------------------
 # /profile - User profile card
 # ---------------------------------------------------------------------------
