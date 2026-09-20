@@ -1706,6 +1706,25 @@ async def idle_sweep_once():
 # ---------------------------------------------------------------------------
 # SLA sweep: warn at SLA_WARN_HOURS, close at SLA_CLOSE_HOURS (staff no-response)
 # ---------------------------------------------------------------------------
+SLA_FILE = os.path.join(os.path.dirname(__file__), "sla.json")
+
+
+def load_sla():
+    try:
+        with open(SLA_FILE, "r") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def save_sla(data):
+    try:
+        with open(SLA_FILE, "w") as f:
+            json.dump(data, f)
+    except Exception:
+        pass
+
+
 async def sla_sweep_loop():
     await bot.wait_until_ready()
     while not bot.is_closed():
@@ -1718,9 +1737,14 @@ async def sla_sweep_loop():
 
 async def sla_sweep_once():
     now = datetime.datetime.now(datetime.timezone.utc)
+    state = load_sla()
+    changed = False
     for guild in bot.guilds:
         for ch in guild.text_channels:
             if not is_ticket_channel(ch):
+                continue
+            # Verify it's a valid ticket with a user topic
+            if not ch.topic or "user=" not in ch.topic:
                 continue
             # Check last staff message vs now
             last_staff_msg = None
@@ -1728,6 +1752,8 @@ async def sla_sweep_once():
                 if not m.author.bot and is_staff_member(m.author):
                     last_staff_msg = m
                     break
+            cid = str(ch.id)
+            entry = state.get(cid, {})
             if last_staff_msg is None:
                 # No staff response yet - check ticket creation time
                 created = ch.created_at
@@ -1737,12 +1763,25 @@ async def sla_sweep_once():
                 if age_h >= SLA_CLOSE_HOURS:
                     await ch.send("🔒 Closing - no staff response within SLA. Transcript logged.")
                     await close_ticket_silently(ch, reason="SLA breach (no staff response)")
-                elif age_h >= SLA_WARN_HOURS:
+                    state.pop(cid, None)
+                    changed = True
+                elif age_h >= SLA_WARN_HOURS and not entry.get("warned"):
                     try:
                         await ch.send(f"⚠️ SLA warning: No staff response in {SLA_WARN_HOURS:g}h. "
                                       f"Will auto-close at {SLA_CLOSE_HOURS:g}h.")
+                        entry["warned"] = True
+                        entry["warned_at"] = now.isoformat()
+                        state[cid] = entry
+                        changed = True
                     except Exception:
                         pass
+            else:
+                # Staff replied - reset warning if it was warned
+                if entry.get("warned"):
+                    state.pop(cid, None)
+                    changed = True
+    if changed:
+        save_sla(state)
 
 
 @app_commands.checks.has_permissions(manage_guild=True)
