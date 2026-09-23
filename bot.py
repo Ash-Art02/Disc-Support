@@ -1964,9 +1964,8 @@ async def sendfile_cmd(interaction: discord.Interaction, attachment: discord.Att
     target = recipient or interaction.user
     
     # Build message with promo
-    newline = "\n"
     promo_text = f"\n\n{FILE_TRANSFER_PROMO}"
-    content = f"{(message + newline) if message else ''}**File:** {attachment.filename}\n**Download:** {url}{promo_text}"
+    content = f"{message + '\n' if message else ''}**File:** {attachment.filename}\n**Download:** {url}{promo_text}"
     
     # Send via DM
     try:
