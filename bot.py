@@ -1845,7 +1845,6 @@ AVAILABLE_MODES = {
     "moderation": "Auto-mod, word filters, timeout escalation, logging",
     "utility": "Reminders, polls, server stats, user info",
     "fun": "Memes, jokes, 8ball, rate commands",
-    "file_transfer": "Large file sharing via external host (bypasses Discord 8MB limit)",
 }
 
 @app_commands.checks.has_permissions(manage_guild=True)
@@ -1891,95 +1890,6 @@ async def toggles_cmd(interaction: discord.Interaction):
         e.description = "No modes configured. Use `/toggle` to enable/disable."
     
     await interaction.response.send_message(embed=e, ephemeral=True)
-
-
-# ---------------------------------------------------------------------------
-# File transfer: send large files via external host (0x0.st)
-# ---------------------------------------------------------------------------
-FILE_TRANSFER_HOST = "https://0x0.st"  # No API key needed, no size limit (practically)
-FILE_TRANSFER_PROMO = "Want to share files yourself? Go to https://0x0.st — free, no account, no size limit."
-
-async def upload_to_host(file_bytes: bytes, filename: str) -> str | None:
-    """Upload file to 0x0.st and return download URL."""
-    try:
-        import aiohttp
-        data = aiohttp.FormData()
-        data.add_field('file', file_bytes, filename=filename)
-        async with aiohttp.ClientSession() as session:
-            async with session.post(FILE_TRANSFER_HOST, data=data) as resp:
-                if resp.status == 200:
-                    url = (await resp.text()).strip()
-                    return url
-    except Exception as e:
-        print(f"File upload failed: {e}")
-    return None
-
-
-def is_file_transfer_enabled(guild_id: int) -> bool:
-    data = load_toggles()
-    return data.get(str(guild_id), {}).get("file_transfer", False)
-
-
-@app_commands.checks.has_permissions(manage_guild=True)
-@bot.tree.command(name="sendfile", description="Send a large file via external host (requires file_transfer mode).")
-@app_commands.describe(
-    file="File to send",
-    recipient="User to send file to (DMs them the link)",
-    message="Optional message to include"
-)
-async def sendfile_cmd(interaction: discord.Interaction, attachment: discord.Attachment, 
-                       recipient: discord.Member | discord.User | None = None, message: str | None = None):
-    """Upload file to external host and DM link to recipient."""
-    if not is_file_transfer_enabled(interaction.guild_id):
-        await interaction.response.send_message(
-            "File transfer mode is not enabled. Use `/toggle file_transfer True` to enable.",
-            ephemeral=True
-        )
-        return
-    
-    # Check file size (Discord attachment limit is 25MB for bots, but we can handle larger via DM)
-    if attachment.size > 100_000_000:  # 100MB sanity limit
-        await interaction.response.send_message(
-            "File too large (max 100MB for upload via bot).",
-            ephemeral=True
-        )
-        return
-    
-    await interaction.response.defer(ephemeral=True, thinking=True)
-    
-    # Download the attachment
-    try:
-        file_bytes = await attachment.read()
-    except Exception as e:
-        await interaction.followup.send(f"Failed to download attachment: {e}", ephemeral=True)
-        return
-    
-    # Upload to external host
-    url = await upload_to_host(file_bytes, attachment.filename)
-    if not url:
-        await interaction.followup.send("Upload failed. Try again later.", ephemeral=True)
-        return
-    
-    # Determine recipient
-    target = recipient or interaction.user
-    
-    # Build message with promo
-    promo_text = f"\n\n{FILE_TRANSFER_PROMO}"
-    content = f"{message + '\n' if message else ''}**File:** {attachment.filename}\n**Download:** {url}{promo_text}"
-    
-    # Send via DM
-    try:
-        await target.send(content)
-        await interaction.followup.send(f"Sent download link to {target.mention}.", ephemeral=True)
-    except discord.Forbidden:
-        # Fallback: post in channel if DMs closed
-        try:
-            await interaction.followup.send(
-                f"{target.mention} (DMs closed — posting here):\n{content}",
-                ephemeral=False
-            )
-        except Exception:
-            await interaction.followup.send("Failed to send - user has DMs closed and I can't post here.", ephemeral=True)
 
 
 # ---------------------------------------------------------------------------
