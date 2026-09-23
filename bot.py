@@ -2,7 +2,7 @@
 Really-good Ticket Bot (discord.py 2.x)
 - Panel with ticket types -> tailored modal -> private channel, always pings staff
 - No fake auto-fixes. Fast triage, excellent tickets.
-- Claim / Close / Transcript / Add-remove, anti-spam, transcripts DM'd + logged
+- Claim / Close / History / Add-remove, anti-spam, conversations saved + logged
 
 Run: pip install -r requirements.txt ; python bot.py
 Setup in Discord (admin): /setup-tickets
@@ -507,7 +507,7 @@ class TicketControlView(discord.ui.View):
     async def transcript(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer(ephemeral=True, thinking=True)
         f = await send_transcript(interaction.channel, requester=interaction.user)
-        await interaction.followup.send("Transcript saved to log channel. Copy:", file=f, ephemeral=True)
+        await interaction.followup.send("Here's the conversation history:", file=f, ephemeral=True)
 
     @discord.ui.button(label="Escalate", style=discord.ButtonStyle.primary,
                        custom_id="ticket_escalate", emoji="⏫")
@@ -566,7 +566,7 @@ class TicketControlView(discord.ui.View):
                 "Only the handling staff team can close this. Report tickets = senior only.",
                 ephemeral=True)
             return
-        await interaction.response.send_message("Closing in 5s - transcript will be DM'd + logged.")
+        await interaction.response.send_message("Closing in 5s - transcript will be sent to you and logged.")
         try:
             text = await build_transcript(interaction.channel)
             # DM the ticket owner
@@ -576,7 +576,7 @@ class TicketControlView(discord.ui.View):
                 if owner:
                     buf = io.BytesIO(f"Ticket #{interaction.channel.name}\n\n".encode() +
                                      text.encode("utf-8", errors="replace"))
-                    await owner.send(f"Your ticket `{interaction.channel.name}` was closed. Transcript attached.",
+                    await owner.send(f"Your ticket `{interaction.channel.name}` was closed. Conversation history attached.",
                                      file=discord.File(buf, filename=f"transcript-{interaction.channel.name}.txt"))
             except Exception:
                 pass
@@ -1033,7 +1033,7 @@ async def setup_tickets(interaction: discord.Interaction):
             ephemeral=True)
     except Exception as e:
         print(f"setup-tickets failed: {type(e).__name__}: {e}")
-        await interaction.followup.send(f"Setup failed: `{type(e).__name__}: {e}`", ephemeral=True)
+        await interaction.followup.send("Setup failed. Check bot logs or try again.", ephemeral=True)
 
 
 @bot.tree.command(name="ticket", description="Open a ticket (buttons).")
@@ -1088,7 +1088,7 @@ async def setup_recommend_senior(interaction: discord.Interaction):
         await interaction.followup.send("Missing Manage Channels permission.", ephemeral=True)
     except Exception as e:
         print(f"setup-recommend-senior failed: {type(e).__name__}: {e}")
-        await interaction.followup.send(f"Setup failed: `{type(e).__name__}: {e}`", ephemeral=True)
+        await interaction.followup.send("Setup failed. Check bot logs or try again.", ephemeral=True)
 
 
 @bot.tree.command(name="claim", description="Claim this ticket (handling team).")
@@ -1229,7 +1229,7 @@ async def ban_cmd(interaction: discord.Interaction, member: discord.Member,
             ephemeral=True)
     except Exception as e:
         print(f"/ban failed: {type(e).__name__}: {e}")
-        await interaction.followup.send(f"Ban failed: `{type(e).__name__}: {e}`", ephemeral=True)
+        await interaction.followup.send("Ban failed. Check bot logs or try again.", ephemeral=True)
 
 
 async def do_unjail(guild: discord.Guild, member: discord.Member, actor: str) -> int:
@@ -1276,7 +1276,7 @@ async def unban_cmd(interaction: discord.Interaction, member: discord.Member):
             await log_ch.send(f"🔓 {interaction.user.mention} released {member.mention}.")
     except Exception as e:
         print(f"/unban failed: {type(e).__name__}: {e}")
-        await interaction.followup.send(f"Unban failed: `{type(e).__name__}: {e}`", ephemeral=True)
+        await interaction.followup.send("Unban failed. Check bot logs or try again.", ephemeral=True)
 
 
 async def tempjail_sweep_loop():
@@ -1555,7 +1555,7 @@ async def staff_cmd(interaction: discord.Interaction, action: str, member: disco
             "Missing permissions - I need Manage Roles and my role above the staff roles.", ephemeral=True)
     except Exception as e:
         print(f"/staff failed: {type(e).__name__}: {e}")
-        await interaction.followup.send(f"Failed: `{type(e).__name__}: {e}`", ephemeral=True)
+        await interaction.followup.send("Failed. Check bot logs or try again.", ephemeral=True)
 
 
 async def log_ch_send_safe(ch: discord.TextChannel, text: str):
@@ -1630,7 +1630,7 @@ async def close_ticket_silently(channel: discord.TextChannel, reason: str):
             if owner:
                 buf = io.BytesIO(f"Ticket #{channel.name} ({reason})\n\n".encode() +
                                  text.encode("utf-8", errors="replace"))
-                await owner.send(f"Your ticket `{channel.name}` was closed ({reason}). Transcript attached.",
+                await owner.send(f"Your ticket `{channel.name}` was closed ({reason}). Conversation history attached.",
                                  file=discord.File(buf, filename=f"transcript-{channel.name}.txt"))
         except Exception:
             pass
@@ -1667,7 +1667,7 @@ async def idle_sweep_once():
             idle_h = (now - last.created_at).total_seconds() / 3600
             entry = state.get(str(ch.id), {})
             if idle_h >= IDLE_CLOSE_HOURS and entry.get("warned"):
-                await ch.send("🔒 Closing for inactivity - transcript will be logged. "
+                await ch.send("🔒 Closing for inactivity - conversation saved. "
                               "Reopen with `/ticket` if you still need help.")
                 await close_ticket_silently(ch, reason="inactive")
                 state.pop(str(ch.id), None)
@@ -1761,14 +1761,14 @@ async def sla_sweep_once():
                     created = created.replace(tzinfo=datetime.timezone.utc)
                 age_h = (now - created).total_seconds() / 3600
                 if age_h >= SLA_CLOSE_HOURS:
-                    await ch.send("🔒 Closing - no staff response within SLA. Transcript logged.")
+                    await ch.send("🔒 Closing - no staff response in time. Conversation saved.")
                     await close_ticket_silently(ch, reason="SLA breach (no staff response)")
                     state.pop(cid, None)
                     changed = True
                 elif age_h >= SLA_WARN_HOURS and not entry.get("warned"):
                     try:
-                        await ch.send(f"⚠️ SLA warning: No staff response in {SLA_WARN_HOURS:g}h. "
-                                      f"Will auto-close at {SLA_CLOSE_HOURS:g}h.")
+                        await ch.send(f"⚠️ No staff response in {SLA_WARN_HOURS:g}h. "
+                                      f"Ticket will auto-close at {SLA_CLOSE_HOURS:g}h if no one replies.")
                         entry["warned"] = True
                         entry["warned_at"] = now.isoformat()
                         state[cid] = entry
@@ -1876,7 +1876,7 @@ async def audit_cmd(interaction: discord.Interaction, member: discord.Member, li
         await interaction.followup.send("Missing View Audit Log permission.", ephemeral=True)
         return
     except Exception as ex:
-        await interaction.followup.send(f"Error: `{type(ex).__name__}: {ex}`", ephemeral=True)
+        await interaction.followup.send("Error retrieving audit log. Check bot logs.", ephemeral=True)
         return
     
     if not entries:
